@@ -1,6 +1,6 @@
 # Quick Reference: Environment Setup
 
-## 🚀 Quick Start (30 seconds)
+## Quick Start (30 seconds)
 
 ### Option 1: Use Default Location
 ```bash
@@ -26,7 +26,7 @@ export ASTRO_DATA_DIR="/your/data/path"
 export R21_URL="https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_data_release/"
 ```
 
-## 📁 Environment Variables
+## Environment Variables
 
 | Variable | What It Does | Example |
 |----------|--------------|---------|
@@ -36,7 +36,7 @@ export R21_URL="https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_d
 | `R21_CATALOG_DIR` | Override catalog location | `/data/catalogs` |
 | `SOURCE_SPECTRA_DIR` | Override source spectra | `/data/sources` |
 
-## 💡 Common Scenarios
+## Common Scenarios
 
 ### Scenario 1: First Time User
 ```bash
@@ -69,7 +69,7 @@ from dotenv import load_dotenv
 load_dotenv()
 ```
 
-## 🔍 Check Your Setup
+## Check Your Setup
 
 ```python
 from astro_utils import spectroscopy as spectro
@@ -82,7 +82,7 @@ print(spectro.get_spectra_dir())
 print(spectro.get_source_spectra_dir())
 ```
 
-## 📂 Expected Directory Structure
+## Expected Directory Structure
 
 ```
 $ASTRO_DATA_DIR/
@@ -97,7 +97,7 @@ $ASTRO_DATA_DIR/
     └── ...
 ```
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### "Can't find data files"
 ```bash
@@ -123,14 +123,12 @@ echo $R21_URL
 curl -I $R21_URL
 ```
 
-## 📖 More Information
+## More Information
 
 - **Detailed config**: See `CONFIG.md`
-- **Migration guide**: See `MIGRATION.md`
 - **Full documentation**: See `README.md`
-- **Path summary**: See `HARDCODED_PATHS_SUMMARY.md`
 
-## 💻 Example Session
+## Example Session
 
 ```bash
 # 1. Set environment
@@ -143,22 +141,3 @@ python3
 >>> # First time: downloads file to $HOME/my_astro_data/muse_catalogs/spectra/A2744/
 >>> # Next time: uses cached file
 ```
-
-## ✅ Ready to Push to GitHub?
-
-Make sure you've:
-- [x] Set `ASTRO_DATA_DIR` for your system
-- [x] Added `.env` to `.gitignore` (already done)
-- [x] Not committed any data files
-- [x] Tested with your data location
-- [x] Updated notebooks with environment setup
-
-## 🎯 That's It!
-
-The package is now configured and ready to use. Start with:
-
-```python
-from astro_utils import spectroscopy, fitting, plotting
-```
-
-Happy analyzing! 🔭
