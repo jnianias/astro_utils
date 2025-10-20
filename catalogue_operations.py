@@ -1,0 +1,330 @@
+import astropy.table as aptb
+import numpy as np
+from astropy.io import fits
+import requests
+from pathlib import Path
+from bs4 import BeautifulSoup
+import re
+import glob
+import os
+from . import spectroscopy as spectro
+from . import constants as const
+
+class R21CatalogNotFoundError(Exception):
+    """Exception raised when R21 catalog is not available for a cluster"""
+    pass
+
+def get_catalog_dir():
+    """
+    Get the catalog directory from environment variable or construct from base data dir.
+    Returns the path as a Path object.
+    """
+    # Check for explicit override
+    catalog_dir = os.environ.get('R21_CATALOG_DIR')
+    if catalog_dir:
+        return Path(catalog_dir)
+    
+    # Otherwise construct from base data directory
+    base_dir = spectro.get_data_dir()
+    return Path(base_dir) / 'muse_catalogs' / 'catalogs'
+
+def load_r21_catalogue(cluster):
+    """Load R21 lensing catalog for a given cluster from local cache or download if not present"""
+    # Define the path to the local cache directory
+    cache_dir = get_catalog_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Local file path
+    local_path = cache_dir.glob(f"{cluster}_v?.?.fits")
+    local_path = list(local_path)
+
+    # If not found locally, attempt to download
+    if len(local_path) == 0:
+        print(f"R21 catalog for {cluster} not found locally. Attempting to download...")
+        success = download_r21_catalogue(cluster)
+        if not success:
+            raise R21CatalogNotFoundError(f"R21 catalog for {cluster} could not be downloaded.")
+        
+    # Check again for the local file after download attempt
+    local_path = cache_dir.glob(f"{cluster}_v?.?.fits")
+    local_path = list(local_path)
+    if len(local_path) == 0:
+        raise R21CatalogNotFoundError(f"R21 catalog for {cluster} still not found after download attempt.")
+    elif len(local_path) > 1:
+        print(f"Multiple versions of R21 catalog found for {cluster}. Using the first one.")
+
+    local_path = local_path[0]  # Use the first match if multiple found
+    
+    # Load and return the catalog as an astropy table
+    try:
+        r21_table = aptb.Table(fits.open(local_path)[1].data)
+        return r21_table
+    except Exception as e:
+        raise R21CatalogNotFoundError(f"Failed to load R21 catalog for {cluster}: {e}")
+        
+def has_valid_mul(row):
+    mul_value = row['MUL']
+    return (mul_value is not None and 
+            str(mul_value).strip() != '' and 
+            str(mul_value).strip().lower() != 'none')
+
+def get_pointing_suffix(cluster_name):
+    """Extract pointing suffix from cluster name if it exists"""
+    if cluster_name.endswith('S') or cluster_name.endswith('NE'):
+        return cluster_name[-2:] if cluster_name.endswith('NE') else cluster_name[-1]
+    return ''
+
+def make_r21_catalogue_dict(clusters):
+    """Create a dictionary of R21 lens tables for given clusters"""
+    lenstables = {}
+    for clus in clusters:
+        try:
+            lenstables[clus] = load_r21_catalogue(clus)
+        except R21CatalogNotFoundError as e:
+            print(e)
+            lenstables[clus] = None
+    return lenstables
+
+def is_counterpart(row1, row2, lenstables, sigma=3.0, method='fit_match'):
+    """Determine if two catalogue entries are counterparts based on specified method.
+    row1, row2: Astropy table rows representing catalogue entries
+    lenstables: Dictionary of R21 lens tables for clusters
+    sigma: Number of sigma for matching criteria
+    method: 'fit_match' or 'R21' to determine matching method
+    Returns: (is_counterpart: bool, significance: float)
+    """    
+    # Immediately eliminate any cases where there's a big difference in z to speed things up
+    if np.abs(row1['z'] - row2['z']) > 0.1:
+        return False, np.inf
+    
+    if method == 'fit_match':
+        match_params = ['LPEAKR', 'FWHMR', 'ASYMR']
+        
+        if row1['SNRB'] > 3.0 and row2['SNRB'] > 3.0:
+            match_params.append('LPEAKB')
+            match_params.append('FWHMB')
+            match_params.append('ASYMB')
+        
+        matches = []
+        for param in match_params:
+            tv = np.abs(row1[param] - row2[param]) < sigma * np.sqrt(row1[param+'_ERR'] ** 2. + row2[param+'_ERR'] ** 2.)
+            matches.append(tv)
+        
+        matches.append((row1['SNRR'] > 3.0) and (row2['SNRR'] > 3.0))
+        
+        if row1['SNRB'] > 3.0 and ~(row2['SNRB'] > 3.0):
+            matches.append(row1['FLUXB'] * row2['FLUXR'] / row1['FLUXR'] < 3.0 * row2['FLUXR_ERR'])
+        
+        return all(matches), np.abs(row1['LPEAKR'] - row2['LPEAKR']) / np.sqrt(row1['LPEAKR_ERR'] ** 2. + row2['LPEAKR_ERR'] ** 2.)
+    
+    elif method.upper() == 'R21':
+        iden1 = row1['iden']
+        clus  = row1['CLUSTER'] if 'MACS0416' not in row1['CLUSTER'] else 'MACS0416'
+        iden2 = row2['iden']
+        
+        try:
+            # This will use the cached table or load it once
+            r21_tab       = lenstables[clus]
+            r21_tab_idens = np.array([x['idfrom'][0].replace('E','X') + str(x['iden']) for x in r21_tab])
+            r21_tab_cluss = np.array([x['CLUSTER'] for x in r21_tab])
+            r21_row1      = r21_tab[(r21_tab_idens == iden1) * (r21_tab_cluss == row1['CLUSTER'])][0]
+            r21_row2      = r21_tab[(r21_tab_idens == iden2) * (r21_tab_cluss == row2['CLUSTER'])][0]
+            
+            # Find out if it belongs to a system; if not, just skip it
+            if not has_valid_mul(r21_row1) or not has_valid_mul(r21_row2):
+                return False, 0.0
+            else:
+                
+                # If it does belong to a system, then figure out whether it's in the same system as row 2
+                # Handle potential None or empty values safely
+                mul1 = str(r21_row1['MUL']).strip()
+                mul2 = str(r21_row2['MUL']).strip()
+
+                # Split and clean the system names
+                sysnames1 = [x.split('.')[0].strip() for x in mul1.split(',') if x.strip()]
+                sysnames2 = [x.split('.')[0].strip() for x in mul2.split(',') if x.strip()]
+
+                # Check if they share any system names
+                common_systems = set(sysnames1) & set(sysnames2)
+                return len(common_systems) > 0, \
+                        np.abs(row1['LPEAKR'] - row2['LPEAKR']) \
+                        / np.sqrt(row1['LPEAKR_ERR'] ** 2. + row2['LPEAKR_ERR'] ** 2.)
+            
+        except KeyError as e:
+            # Fall back to fit matching if R21 not available
+            print(f"No lens table available for {clus}, falling back to fit matching")
+            return is_counterpart(row1, row2, lenstables, sigma=sigma, method='fit_match')
+        
+
+
+def download_r21_catalogue(cluster, dest_dir=None):
+    """Download R21 lens catalog from server with case handling for Bullet cluster"""
+    
+    # Use provided destination directory or get from configuration
+    if dest_dir is None:
+        dest_dir = get_catalog_dir()
+    else:
+        dest_dir = Path(dest_dir)
+    
+    # Ensure destination directory exists
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Handle the special case for Bullet cluster
+    if cluster.upper() == 'BULLET':
+        server_cluster_name = 'Bullet'  # Lowercase on server
+    else:
+        server_cluster_name = cluster   # Normal case on server
+
+    # URL to scrape for available versions
+    base_url = f"https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_data_release/catalogs/"
+    print(f"Scraping directory listing: {base_url}")
+    response = requests.get(base_url)
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    # Find the latest versioned FITS file
+    pattern = re.compile(rf"{cluster.lower()}_v\d+\.\d+\.fits", re.IGNORECASE)
+    fits_file = None
+    for link in soup.find_all("a"):
+        href = link.get("href")
+        if href and pattern.fullmatch(href.lower()):
+            fits_file = href
+            print(f"Found catalogue file: {fits_file}")
+            break
+
+    if not fits_file:
+        print("No matching FITS file found in directory listing.")
+        return None
+
+    # Download the file
+    file_url = base_url + fits_file
+    print(f"Downloading {file_url} ...")
+    file_response = requests.get(file_url)
+    dest_path = dest_dir / fits_file
+    with open(dest_path, "wb") as f:
+        f.write(file_response.content)
+    print(f"Download complete: {dest_path}")
+
+    return str(dest_path)
+
+
+def get_muse_cand(iden, clus):
+    """Get all MUSELET and PRIOR lines for a given iden in a given cluster
+    Includes a provision for M2055 and M20355 from MACS0416S since these have had their IDs changed
+    iden: Full identifier string (e.g., 'E1234', 'X5678')
+    clus: Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+    Returns: Astropy table of lines for the object, sorted by SNR
+    """
+    if iden in ['M2055', 'M20355'] and clus == 'MACS0416S':
+        iden = iden[:-2] # Just remove the '55' at the end
+
+    # Get the relevant cluster line table
+    catalog_dir = get_catalog_dir()
+    linetab = fits.open(glob.glob(str(catalog_dir / f'{clus}_v1.?_lines.fits'))[0])[1].data
+
+    # Generate a column of full identifiers
+    full_idens = np.array([x['idfrom'][0].replace('E','X') + str(x['iden']) for x in linetab])
+
+    # Find the relevant rows
+    objidx = (full_idens == iden)
+
+    if np.sum(objidx) == 0:
+        print(f"WARNING! No lines for {iden} in {clus}")
+        return []
+    else:
+        # Generate a table of lines for this object, sorted by SNR
+        rows = aptb.Table(linetab[objidx])
+        rows.sort('SNR', reverse=True)
+        lya_z = rows[rows['LINE'] == 'LYALPHA']['Z'].data[0]
+        # Eliminate any lines that are not within 1000 km/s of the Lya redshift
+        goodrows = np.abs(spectro.wave2vel(rows['LBDA_OBS'], rows['LBDA_REST'], redshift=lya_z) < 1000.)
+        for i, row in enumerate(rows):
+            if row['LINE'] in const.flines:
+                rows['FAMILY'][i] = const.flines[const.flines == row['LINE']][0]
+            elif row['LINE'] in const.slines:
+                rows['FAMILY'][i] = const.flines[const.slines == row['LINE']][0]
+        return rows[goodrows]
+    
+
+def get_line_table(iden, clus):
+    """Get a table of emission lines from the R21 catalogue for a given source."""
+    candidate_line_table = get_muse_cand(iden, clus)
+
+    if len(candidate_line_table) == 0:
+        # No lines found, return empty table
+        print(f"No lines found for {iden} in {clus}")
+        return aptb.Table()
+
+    # Sort the table by SNR
+    candidate_line_table.sort('SNR', reverse=True) # This must be an astropy table
+
+    # Get rid of any repeats (these can be present due to different line families)
+    line_table = aptb.unique(candidate_line_table, keys='LINE')
+
+    # Get rid of Lyman alpha as we have already fit that
+    line_table = line_table[line_table['LINE'] != 'LYALPHA']
+    
+    return line_table
+    
+
+def insert_fit_results(megatab, clus, iden, lya_results, other_results, avgmu, flags):
+    """Insert fitting results into the megatab for a given source.
+    megatab: an Astropy table, the megatab to insert results into
+    clus: the cluster identifier
+    iden: the source identifier
+    lya_results: tuple of dictionaries (params, errors) from the Lya fitting (keys the same as colnames)
+    other_results: dictionary of tuples of dictionaries (params, errors) from other line fittings,
+                   keyed by line name. The keys of the param and error dictionaries need to be appended
+                   with '_<line_name>' to match the megatab colnames.
+    NB: This function modifies the megatab in place, and as such requires the use of row indices
+    rather than row objects to insert the data.
+    """
+    # Find the index of the row to update
+    row_index = np.where((megatab['CLUSTER'] == clus) & (megatab['iden'] == iden[1:]))[0]
+    if len(row_index) == 0:
+        print(f"Source {iden} in cluster {clus} not found in megatab.")
+        return
+    row_index = row_index[0]  # Get the single index value
+
+    # Insert Lya results
+    lya_params, lya_errors, _, reduced_chisq = lya_results
+    for key in lya_params.keys():
+        if key in megatab.colnames:
+            megatab[key][row_index] = lya_params[key]
+            megatab[key + '_ERR'][row_index] = lya_errors[key]
+
+    # insert reduced chi-squared for Lya fit
+    if 'RCHSQ' not in megatab.colnames:
+        megatab['RCHSQ'] = np.full(len(megatab), np.nan)
+    megatab['RCHSQ'][row_index] = reduced_chisq
+    
+    bluecols = ['AMPB', 'FLUXB', 'DISPB', 'FWHMB', 'ASYMB', 'LPEAKB']
+
+    # insert SNR for Lya fit
+    megatab['SNRR'][row_index] = lya_params['FLUXR'] / lya_errors['FLUXR']
+    if 'SNRB' in lya_params and 'FLUXB' in lya_errors and not np.isnan(lya_params['FLUXB']) and not np.isnan(lya_errors['FLUXB']):
+        megatab['SNRB'][row_index] = lya_params['FLUXB'] / lya_errors['FLUXB']
+    else:
+        megatab['SNRB'][row_index] = np.nan
+        for colname in bluecols:
+            megatab[colname][row_index]             = np.nan
+            megatab[colname + '_ERR'][row_index]    = np.nan
+
+    # Insert other line results
+    for line_name, (params, errors, _, rchsq) in other_results.items():
+        for key in params.keys():
+            colname = f"{key}_{line_name}"
+            errcolname = f"{key}_ERR_{line_name}"
+            if colname in megatab.colnames:
+                megatab[colname][row_index] = params[key]
+                megatab[errcolname][row_index] = errors[key]
+        megatab[f'RCHSQ_{line_name}'][row_index] = rchsq
+        megatab[f'SNR_{line_name}'][row_index] = params['FLUX'] / errors['FLUX']
+        # Re-insert any flags that were carried over from group members
+        if line_name in flags:
+            megatab[f'FLAG_{line_name}'][row_index] = 'c'
+            
+    # Update the magnification
+    megatab['MU'][row_index] = avgmu
+
+    # Finally, update the identifier with the 'S' prefix to indicate stacked spectrum
+    megatab['iden'][row_index] = iden

@@ -1,0 +1,68 @@
+#!/bin/bash
+# Setup script for astro_utils environment variables
+# 
+# Usage:
+#   1. Copy this file: cp setup_env.sh.example setup_env.sh
+#   2. Edit setup_env.sh with your actual paths
+#   3. Source it: source setup_env.sh
+#
+# Note: This file is tracked by git as an example.
+# The actual setup_env.sh (without .example) is in .gitignore
+
+# ============================================================
+# CUSTOMIZE THESE PATHS FOR YOUR SYSTEM
+# ============================================================
+
+# Base data directory - customize this to your data location
+export ASTRO_DATA_DIR="/path/to/your/astronomy/data"
+
+# R21 data URL - usually this default is correct
+export R21_URL="https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_data_release/"
+
+# ============================================================
+# OPTIONAL: Advanced Configuration
+# ============================================================
+# Uncomment and customize these if you want non-standard paths
+
+# R21 spectra directory (overrides default derived from ASTRO_DATA_DIR)
+# export R21_SPECTRA_DIR="/custom/path/to/spectra"
+
+# R21 catalog directory (overrides default derived from ASTRO_DATA_DIR)
+# export R21_CATALOG_DIR="/custom/path/to/catalogs"
+
+# Source spectra directory (overrides default derived from ASTRO_DATA_DIR)
+# export SOURCE_SPECTRA_DIR="/custom/path/to/source_spectra"
+
+# ============================================================
+# Confirmation Message
+# ============================================================
+
+echo "================================================"
+echo "astro_utils environment configured"
+echo "================================================"
+echo "ASTRO_DATA_DIR     = $ASTRO_DATA_DIR"
+echo "R21_URL            = $R21_URL"
+
+if [ ! -z "$R21_SPECTRA_DIR" ]; then
+    echo "R21_SPECTRA_DIR    = $R21_SPECTRA_DIR"
+fi
+
+if [ ! -z "$R21_CATALOG_DIR" ]; then
+    echo "R21_CATALOG_DIR    = $R21_CATALOG_DIR"
+fi
+
+if [ ! -z "$SOURCE_SPECTRA_DIR" ]; then
+    echo "SOURCE_SPECTRA_DIR = $SOURCE_SPECTRA_DIR"
+fi
+
+echo "================================================"
+echo ""
+echo "Expected data structure:"
+echo "$ASTRO_DATA_DIR/"
+echo "  ├── muse_catalogs/"
+echo "  │   ├── catalogs/    (R21 catalog FITS files)"
+echo "  │   └── spectra/     (R21 spectra by cluster)"
+echo "  └── source_spectra/  (aperture spectra by cluster)"
+echo ""
+echo "You can now run your Python scripts or notebooks."
+echo "================================================"
