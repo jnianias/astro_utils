@@ -72,3 +72,5 @@ source_spectra/
 # Migration documentation (keep local only)
 MIGRATION.md
 HARDCODED_PATHS_SUMMARY.md
+RESTRUCTURE_GUIDE.md
+PACKAGE_TEST_RESULTS.md

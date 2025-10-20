@@ -12,6 +12,8 @@ setup(
         "error_propagation",
         "specutils",
         "mpdaf",
-        "photutils" 
+        "photutils",
+        "requests",           # Used by catalogue_operations.py
+        "beautifulsoup4"      # Used by catalogue_operations.py for web scraping
     ],
 )
