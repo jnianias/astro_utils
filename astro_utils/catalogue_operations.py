@@ -357,6 +357,7 @@ def update_table(megatable, index, linename, params, param_errs, rchsq, flag='')
         - 'm': Multiple comparable peaks detected
         - 's': Sky line contamination
         - 't': Line too thin
+        - 'n': Negative flux domination
         - 'p': Peak-dominated
         - 'c': Contamination
         

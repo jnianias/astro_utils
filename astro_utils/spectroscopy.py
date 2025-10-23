@@ -566,6 +566,7 @@ def flag_fitted_line(megatab, index, linename, spectab=None,
     potentially problematic measurements. Flags are applied as single characters:
     - 's': Sky line contamination
     - 't': Line too thin (FWHM below spectral resolution)
+    - 'n': Negative flux domination (spectrum goes below zero in line region)
     - 'p': Peak-dominated (peak significance exceeds integrated flux SNR)
     
     The function modifies the table in place by updating the FLAG column for the line.
@@ -601,6 +602,7 @@ def flag_fitted_line(megatab, index, linename, spectab=None,
         Dictionary of test results with keys:
         - 'sky': bool, True if sky line contamination detected
         - 'thin': bool, True if FWHM below threshold
+        - 'negative': bool, True if spectrum dominated by negative flux
         - 'peakdominant': bool, True if peak dominates over integrated flux
         - 'contamination': bool, True if already flagged with 'c'
         - 'flags_applied': str, The flag string that was applied
@@ -644,6 +646,7 @@ def flag_fitted_line(megatab, index, linename, spectab=None,
         'sky': False,
         'thin': False,
         'peakdominant': False,
+        'negative': False,
         'contamination': False,
         'flags_applied': ''
     }
@@ -674,7 +677,27 @@ def flag_fitted_line(megatab, index, linename, spectab=None,
     # Test 2: Line too thin (below spectral resolution)
     tests['thin'] = (fwhm < fwhm_threshold)
     
-    # Test 3: Peak-dominated line
+    # Test 3: Negative flux domination
+    # Check if the spectrum around the line is dominated by negative values
+    if spectab is not None:
+        # Define the region around the line (±2 FWHM or minimum 5 Å)
+        half_width = np.max([2.0 * fwhm, 5.0])
+        line_mask = (spectab['wave'] > lpeak - half_width) & (spectab['wave'] < lpeak + half_width)
+        
+        if np.sum(line_mask) > 0:
+            line_flux = spectab['spec'][line_mask]
+            # Check if more than 50% of pixels are negative
+            frac_negative = np.sum(line_flux < 0) / len(line_flux)
+            # Check if the median flux is negative
+            median_negative = np.median(line_flux) < 0
+            
+            # Flag if either condition is met
+            tests['negative'] = (frac_negative > 0.5) or median_negative
+            
+            if verbose and tests['negative']:
+                print(f"Negative flux check: {frac_negative*100:.1f}% of pixels negative, median={np.median(line_flux):.2e}")
+    
+    # Test 4: Peak-dominated line
     # Calculate peak amplitude with proper error propagation
     if spectab is not None:
         # Use error_propagation to compute amplitude and its uncertainty
@@ -731,6 +754,10 @@ def flag_fitted_line(megatab, index, linename, spectab=None,
             flag_string += 't'
             if verbose:
                 print(f"  Applying flag 't': Line too thin (FWHM={fwhm:.2f} < {fwhm_threshold:.2f} Å)")
+        if tests['negative']:
+            flag_string += 'n'
+            if verbose:
+                print(f"  Applying flag 'n': Spectrum dominated by negative flux")
         if tests['peakdominant']:
             flag_string += 'p'
             if verbose:
