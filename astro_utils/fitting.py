@@ -209,6 +209,180 @@ def gen_corr_noise(yerr, corr_len, size=None):
     # Scale by errors while preserving correlation structure
     return noise * (yerr[:n] if yerr.ndim > 0 else yerr) 
 
+
+def check_multiple_peaks(wave, residuals, err, fitted_peak_wave, fitted_amplitude, 
+                         fitted_width, n_fit_params=3, min_separation=3, 
+                         amplitude_ratio_threshold=0.5, width_ratio_range=(0.5, 2.0), 
+                         detection_threshold=3.0, chi2_threshold=3.0):
+    """
+    Check if there are other unexplained peaks in the residuals similar to the fitted line.
+    
+    This detects cases where multiple peaks of comparable strength exist, suggesting
+    the fitted line may not be unique or the spectrum is contaminated by complex 
+    structure (e.g., multiple emission lines, broad absorption features, etc.).
+    
+    Only performs peak search if reduced chi-square is high (poor fit), otherwise
+    returns immediately with no flag.
+    
+    Parameters:
+    -----------
+    wave : array
+        Wavelength array
+    residuals : array
+        Residuals after subtracting the fitted model (observed - model)
+    err : array
+        Error array (for significance calculation)
+    fitted_peak_wave : float
+        Wavelength of the fitted peak
+    fitted_amplitude : float
+        Amplitude (height) of the fitted peak
+    fitted_width : float
+        FWHM or sigma of the fitted peak (in same units as wave)
+    n_fit_params : int
+        Number of parameters in the fit (for reduced chi-square calculation)
+        (default: 3, e.g., amplitude, center, width)
+    min_separation : float
+        Minimum separation in units of fitted_width to consider peaks as distinct
+        (default: 3, i.e., peaks must be >3*FWHM apart)
+    amplitude_ratio_threshold : float
+        Flag if other peaks have amplitude > this fraction of fitted peak
+        (default: 0.5, i.e., flag if other peaks are >50% as strong)
+    width_ratio_range : tuple
+        Flag if other peaks have widths within this range of fitted width
+        (default: (0.5, 2.0), i.e., half to double the width)
+    detection_threshold : float
+        Minimum SNR for a peak in residuals to be considered significant
+        (default: 3.0 sigma)
+    chi2_threshold : float
+        Only search for peaks if reduced chi-square > this value
+        (default: 3.0, indicating significant unexplained structure)
+    
+    Returns:
+    --------
+    dict with keys:
+        'suspicious': bool - True if suspicious peaks found AND reduced chi2 > threshold
+        'n_comparable_peaks': int - Number of comparable peaks found
+        'peak_info': list of dicts - Info about each suspicious peak
+            Each dict contains: wavelength, amplitude, snr, width, 
+            amplitude_ratio, width_ratio, separation
+        'flag': str - Suggested flag ('m' for multiple peaks, or '')
+        'reduced_chi2': float - Calculated reduced chi-square of fit
+        'message': str - Human-readable explanation of result
+    
+    Example:
+    --------
+    >>> result = check_multiple_peaks(wave, residuals, err, 5007.0, 1e-17, 2.5)
+    >>> if result['suspicious']:
+    >>>     print(f"Found {result['n_comparable_peaks']} comparable peaks")
+    """
+    from scipy.signal import find_peaks
+    
+    # First check: Calculate reduced chi-square
+    chi2 = np.sum((residuals / err) ** 2)
+    n_data = len(residuals)
+    dof = n_data - n_fit_params
+    reduced_chi2 = chi2 / dof
+    
+    # If fit is good (low chi-square), no need to search for peaks
+    if reduced_chi2 <= chi2_threshold:
+        return {
+            'suspicious': False,
+            'n_comparable_peaks': 0,
+            'peak_info': [],
+            'flag': '',
+            'reduced_chi2': reduced_chi2,
+            'message': f'Good fit (χ²_red = {reduced_chi2:.2f} ≤ {chi2_threshold}), no peak search needed'
+        }
+    
+    # Find peaks in the residuals (positive and negative)
+    # Look at absolute value to catch both emission and absorption features
+    abs_residuals = np.abs(residuals)
+    significance = abs_residuals / err
+    
+    # Find peaks in the significance array
+    # Use a minimum height of detection_threshold sigma
+    peaks_idx, properties = find_peaks(significance, 
+                                       height=detection_threshold,
+                                       prominence=detection_threshold * 0.5)
+    
+    if len(peaks_idx) == 0:
+        return {
+            'suspicious': False,
+            'n_comparable_peaks': 0,
+            'peak_info': [],
+            'flag': '',
+            'reduced_chi2': reduced_chi2,
+            'message': f'Poor fit (χ²_red = {reduced_chi2:.2f}) but no significant peaks found'
+        }
+    
+    # Get peak properties
+    peak_waves = wave[peaks_idx]
+    peak_amplitudes = residuals[peaks_idx]  # Signed amplitudes
+    peak_snrs = significance[peaks_idx]
+    
+    # Estimate widths of peaks using scipy's peak_widths
+    from scipy.signal import peak_widths
+    widths_idx, width_heights, left_ips, right_ips = peak_widths(
+        significance, peaks_idx, rel_height=0.5
+    )
+    
+    # Convert width from indices to wavelength units
+    delta_wave = np.median(np.diff(wave))
+    peak_widths = widths_idx * delta_wave
+    
+    # Filter peaks:
+    # 1. Exclude the fitted peak itself (within min_separation * fitted_width)
+    # 2. Keep only peaks with comparable amplitude
+    # 3. Keep only peaks with comparable width
+    
+    suspicious_peaks = []
+    
+    for i, (pw, pa, psnr, pwidth) in enumerate(zip(peak_waves, peak_amplitudes, 
+                                                     peak_snrs, peak_widths)):
+        # Check if this is the fitted peak (too close)
+        separation = np.abs(pw - fitted_peak_wave)
+        if separation < min_separation * fitted_width:
+            continue  # This is probably the fitted line itself
+        
+        # Check amplitude ratio
+        amplitude_ratio = np.abs(pa) / np.abs(fitted_amplitude)
+        if amplitude_ratio < amplitude_ratio_threshold:
+            continue  # Too weak
+        
+        # Check width ratio
+        width_ratio = pwidth / fitted_width
+        if width_ratio < width_ratio_range[0] or width_ratio > width_ratio_range[1]:
+            continue  # Too narrow or too wide
+        
+        # This peak is suspicious!
+        suspicious_peaks.append({
+            'wavelength': pw,
+            'amplitude': pa,
+            'snr': psnr,
+            'width': pwidth,
+            'amplitude_ratio': amplitude_ratio,
+            'width_ratio': width_ratio,
+            'separation': separation
+        })
+    
+    n_suspicious = len(suspicious_peaks)
+    flag = 'm' if n_suspicious > 0 else ''
+    
+    if n_suspicious > 0:
+        message = f'Poor fit (χ²_red = {reduced_chi2:.2f}): found {n_suspicious} comparable peak(s)'
+    else:
+        message = f'Poor fit (χ²_red = {reduced_chi2:.2f}) but no comparable peaks (different amplitude/width)'
+    
+    return {
+        'suspicious': n_suspicious > 0,
+        'n_comparable_peaks': n_suspicious,
+        'peak_info': suspicious_peaks,
+        'flag': flag,
+        'reduced_chi2': reduced_chi2,
+        'message': message
+    }
+
+
 def avgfunc(poptl, errfunc, sig_clip = 7.0):
         if errfunc == 'stddev':
             _scs = sigma_clipped_stats(np.array(poptl), axis=0, maxiters=1, sigma=sig_clip)
@@ -665,6 +839,26 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
     # If the reduced chi-squared is very high, print warning
     if reduced_chisq > 3.0:
         print(f'WARNING: HIGH REDUCED CHI SQUARED STATISTIC ({reduced_chisq})! REVIEW RESULT.')
+    
+    # Check for multiple comparable peaks in residuals
+    residuals = spec_fit - model(wl_fit, *poptg)
+    fitted_amplitude = poptg[0]  # First parameter is always flux/amplitude
+    fitted_center = poptg[1]     # Second parameter is always center
+    fitted_fwhm = poptg[2]       # Third parameter is always FWHM
+    n_params = len(poptg)
+    
+    peak_check = check_multiple_peaks(
+        wl_fit, residuals, err_fit,
+        fitted_center, fitted_amplitude, fitted_fwhm,
+        n_fit_params=n_params,
+        chi2_threshold=3.0
+    )
+    
+    if peak_check['suspicious']:
+        print(f"WARNING: {peak_check['message']}")
+        for i, peak in enumerate(peak_check['peak_info']):
+            print(f"  Suspicious peak {i+1}: λ={peak['wavelength']:.2f}, "
+                  f"SNR={peak['snr']:.1f}, amp_ratio={peak['amplitude_ratio']:.2f}")
 
     # Populate the fit_result dictionary
     fit_result['method'] = method
@@ -678,6 +872,8 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
     fit_result['param_dict'] = param_dict
     fit_result['error_dict'] = error_dict
     fit_result['model'] = model
+    fit_result['peak_check'] = peak_check  # Add multiple peaks check result
+    fit_result['multipeak_flag'] = peak_check['flag']  # Quick access to flag
 
     # If requested, plot the fitting result
     if plot_result:
@@ -723,7 +919,9 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row = None, width=25, a
     Uses a single Gaussian plus linear baseline model with initial guesses from the table row.
     In cases where no significant fit was previously found, gets initial guesses from the R21 catalogue.
     If a secondary line of a doublet is passed, the primary is inferred and passed to the fitting function instead.
-    Returns a dictionary of optimal parameters and their associated uncertainties.
+    
+    Parameters:
+    -----------
     wave:         wavelength array
     spec:         flux density array
     spec_err:     flux density error array
@@ -734,6 +932,19 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row = None, width=25, a
     bootstrap_params: optional dictionary of parameters for Monte Carlo error estimation
                       (niter, errfunc, chisq_thresh, sig_clip, autocorrelation, max_lag, 
                        baseline_order, max_nfev). If None, uses standard curve_fit errors.
+    
+    Returns:
+    --------
+    param_dict : dict
+        Dictionary of fitted parameters (FLUX, LPEAK, FWHM, CONT, SLOPE, and FLUX2 if doublet)
+    error_dict : dict
+        Dictionary of parameter uncertainties
+    model : callable
+        The model function used for fitting
+    reduced_chisq : float
+        Reduced chi-square of the fit
+    multipeak_flag : str
+        Quality flag: 'm' if multiple comparable peaks detected, '' otherwise
     """
     if line_tab_row is None and line_name is None:
         raise ValueError("Either line_tab_row or line_name must be provided.")
@@ -818,6 +1029,7 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row = None, width=25, a
     if 'param_dict' not in fit:
         print(f"Fit failed for {primary_line} in {row['CLUSTER']} {row['iden']}.")
         nandict = {param: np.nan for param in initial_guesses.keys()}
-        return nandict, nandict, None, np.nan
+        return nandict, nandict, None, np.nan, ''
     else:
-        return fit['param_dict'], fit['error_dict'], fit['model'], fit['reduced_chisq']
+        multipeak_flag = fit.get('multipeak_flag', '')
+        return fit['param_dict'], fit['error_dict'], fit['model'], fit['reduced_chisq'], multipeak_flag
