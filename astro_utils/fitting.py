@@ -45,7 +45,11 @@ def which_fit_method(linename):
 from numpy.polynomial import Polynomial as nppoly
 
 def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
-    """More reliable correlation length estimator."""
+    """Estimate correlation length by fitting exponential decay to ACF.
+    
+    Returns the e-folding length τ where ACF(τ) = 1/e ≈ 0.368.
+    This is more principled than threshold crossing.
+    """
     # 1. Baseline removal with diagnostics
     if baseline_order is not None:
         p = nppoly.fit(wave, spec, baseline_order)
@@ -61,28 +65,80 @@ def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
         return 1  # Protection against bad normalization
     acf = acf / acf[0]
 
-    # 3. Dynamic thresholding with diagnostics
+    # 3. Estimate noise floor from tail
     tail_start = min(max_lag + 1, len(acf)-20)
     tail_acf = acf[tail_start:tail_start+20]
-    threshold = 0.33  # More sensitive threshold
-
+    noise_floor_mean = np.mean(tail_acf)
+    noise_floor_std = np.std(tail_acf)
+    
+    # Conservative threshold: 90th percentile of noise distribution (1.28 sigma)
+    threshold = max(0.1, noise_floor_mean + 1.28 * noise_floor_std)
+    
     print(f"\nACF[:10]: {acf[1:11]}")
-    print(f"Noise floor std: {np.std(tail_acf):.3f}")
-    print(f"Using threshold: {threshold:.3f}")
-
-    # 4. More lenient crossing condition
+    print(f"Noise floor: {noise_floor_mean:.3f} +/- {noise_floor_std:.3f}")
+    print(f"Threshold (90th percentile): {threshold:.3f}")
+    
+    # 4. Find where ACF drops below threshold (fallback method)
+    crossing_lag = None
     for k in range(1, min(max_lag, len(acf)-1)):
         if acf[k] < threshold:
-            print(f"Found crossing at lag {k} (ACF={acf[k]:.3f})")
-            return k
-
-    return max_lag
+            crossing_lag = k
+            break
+    
+    # 5. Fit exponential decay ACF(k) = exp(-k/τ) to estimate τ
+    # Only fit to points above threshold
+    if crossing_lag is not None:
+        fit_range = crossing_lag + 2  # Fit a bit beyond crossing
+    else:
+        fit_range = max_lag
+    
+    lags = np.arange(1, min(fit_range, len(acf)))
+    acf_to_fit = acf[1:fit_range]
+    
+    # Only fit positive ACF values (take log)
+    valid_mask = acf_to_fit > threshold
+    if np.sum(valid_mask) >= 2:  # Need at least 2 points to fit
+        try:
+            # Fit log(ACF) = -k/τ  =>  slope = -1/τ
+            # Weight by 1/sqrt(k) to give more weight to early lags
+            weights = 1.0 / np.sqrt(lags[valid_mask])
+            coeffs = np.polyfit(lags[valid_mask], np.log(acf_to_fit[valid_mask]), 
+                               deg=1, w=weights)
+            tau_fit = -1.0 / coeffs[0]
+            
+            # Sanity check: tau should be positive and reasonable
+            if 0.5 <= tau_fit <= 2 * max_lag:
+                print(f"Fitted τ = {tau_fit:.2f} pixels (exponential decay)")
+                if crossing_lag is not None:
+                    print(f"Threshold crossing at lag {crossing_lag} (ACF={acf[crossing_lag]:.3f})")
+                return max(1.0, tau_fit)  # Return at least 1
+            else:
+                print(f"Fitted τ = {tau_fit:.2f} outside reasonable range, using fallback")
+        except (np.linalg.LinAlgError, RuntimeError) as e:
+            print(f"Exponential fit failed: {e}, using fallback")
+    
+    # 6. Fallback to threshold crossing or max_lag
+    if crossing_lag is not None:
+        print(f"Using threshold crossing at lag {crossing_lag} (ACF={acf[crossing_lag]:.3f})")
+        return crossing_lag
+    else:
+        print(f"WARNING: No crossing found within max_lag={max_lag} - returning max_lag")
+        if acf[max_lag] > 2 * noise_floor_std:
+            print(f"WARNING: ACF({max_lag}) = {acf[max_lag]:.3f} still above noise floor")
+        return max_lag
 
 def gen_corr_noise(yerr, corr_len, size=None):
-    """Simpler, more robust correlated noise generator.
+    """Generate correlated noise using AR(1) process.
+    
+    For an AR(1) process with parameter phi, the ACF is:
+        ACF(k) = phi^k
+    
+    We want ACF(τ) = exp(-1) where τ is the correlation length (e-folding scale).
+    Therefore: phi^τ = exp(-1)  =>  phi = exp(-1/τ)
+    
     Args:
         yerr: Array of error values
-        corr_len: Desired correlation length in pixels (>1)
+        corr_len: Correlation length τ in pixels (e-folding scale)
         size: Optional output size (defaults to len(yerr))
     Returns:
         Correlated noise array with same shape as yerr/size
@@ -92,12 +148,12 @@ def gen_corr_noise(yerr, corr_len, size=None):
 
     n = len(yerr) if size is None else size
 
-    # Simplified AR(1) process with guaranteed correlations
+    # AR(1) process: noise[i] = phi * noise[i-1] + sqrt(1-phi^2) * epsilon[i]
     noise = np.zeros(n)
     noise[0] = np.random.normal()
 
-    # Stronger persistence factor
-    phi = np.exp(-1.0/(corr_len-1))
+    # For correlation length τ (e-folding scale): phi = exp(-1/τ)
+    phi = np.exp(-1.0 / corr_len)
 
     for i in range(1, n):
         noise[i] = phi * noise[i-1] + np.sqrt(1-phi**2) * np.random.normal()
@@ -115,7 +171,7 @@ def avgfunc(poptl, errfunc, sig_clip = 7.0):
 
 def fit_mc(f, x, y, yerr, p0, bounds=None, niter=500, errfunc='mad',
            return_sample=False, chisq_thresh=np.inf, sig_clip=7.0,
-           autocorrelation=False, max_lag=5, baseline_order=0, max_nfev=5000):
+           autocorrelation=False, max_lag=10, baseline_order=0, max_nfev=5000):
     """Enhanced MC fitting with robust correlation handling.
     f              : model function to fit
     x              : independent variable data
@@ -130,7 +186,7 @@ def fit_mc(f, x, y, yerr, p0, bounds=None, niter=500, errfunc='mad',
     sig_clip       : sigma clipping threshold for stddev calculation (default: 7.0)
     autocorrelation: whether to estimate correlation length from residuals (default: False)
                      or provide a fixed integer value for correlation length
-    max_lag        : maximum lag to consider in autocorrelation (default: 5)
+    max_lag        : maximum lag to consider in autocorrelation (default: 10)
     baseline_order : order of polynomial baseline to subtract before autocorrelation (default: 0)
     max_nfev       : maximum number of function evaluations for curve_fit (default: 10000)
     """
@@ -249,13 +305,36 @@ def prep_inputs(initial_guesses, bounds, linename, z_lya):
 
 
 def check_inputs(p0, bounds):
-    """Ensure initial guesses are within bounds."""
+    """Ensure initial guesses are within bounds and not NaN."""
     p0_checked = []
     for i, val in enumerate(p0):
         lower, upper = bounds[0][i], bounds[1][i]
-        if not (lower <= val <= upper):
-            print(f"Initial guess {val} is outside bounds ({lower}, {upper}); adjusting to midpoint.")
-            val = (lower + upper) / 2.0
+        
+        # Check for NaN first
+        if np.isnan(val):
+            # Use midpoint of bounds for NaN values
+            if np.isinf(lower) or np.isinf(upper):
+                # Handle infinite bounds
+                if np.isinf(lower) and np.isinf(upper):
+                    val = 0.0  # Both infinite, use 0
+                elif np.isinf(lower):
+                    val = upper * 0.5 if upper > 0 else upper - 100
+                else:  # upper is inf
+                    val = lower * 0.5 if lower < 0 else lower + 100
+            else:
+                val = (lower + upper) / 2.0
+            print(f"WARNING: Initial guess {i} is NaN; adjusting to {val:.3e}")
+        elif not (lower <= val <= upper):
+            # Out of bounds - use midpoint or adjust slightly inside bounds
+            if np.isinf(lower) or np.isinf(upper):
+                if np.isinf(lower):
+                    val = upper * 0.9 if upper != 0 else upper - 0.1
+                else:  # upper is inf
+                    val = lower * 1.1 if lower != 0 else lower + 0.1
+            else:
+                val = (lower + upper) / 2.0
+            print(f"WARNING: Initial guess {val} is outside bounds ({lower}, {upper}); adjusting to {val:.3e}")
+            
         p0_checked.append(val)
     return p0_checked, bounds
         
@@ -367,6 +446,9 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
                 fluxsecond_bounds[1], cont_bounds[1], slope_bounds[1]]
         )
 
+        # Make sure that initial guesses are within bounds, raise warning if not and default to midpoint
+        initg, bounds = check_inputs(initg, bounds)
+
         # Try fitting multiple times in case of failure
         max_retries = 3
         success = False
@@ -408,8 +490,8 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
                 print("Monte Carlo error estimation failed, using curve_fit errors")
                 error_values = np.sqrt(np.diag(pcovg))
             else:
-                poptg = mc_result[0][0]  # Best-fit parameters from MC
-                error_values = mc_result[0][1]  # Errors from MC
+                poptg = mc_result[0]  # Best-fit parameters from MC
+                error_values = mc_result[1]  # Errors from MC
         else:
             error_values = np.sqrt(np.diag(pcovg))
         
@@ -432,6 +514,9 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
             [flux_bounds[0], lpeak_bounds[0], fwhm_bounds[0], cont_bounds[0], slope_bounds[0]],
             [flux_bounds[1], lpeak_bounds[1], fwhm_bounds[1], cont_bounds[1], slope_bounds[1]]
         )
+
+        # Make sure that initial guesses are within bounds, raise warning if not and default to midpoint
+        initg, bounds = check_inputs(initg, bounds)
 
         model = mdl.gaussian
 
@@ -476,8 +561,8 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
                 print("Monte Carlo error estimation failed, using curve_fit errors")
                 error_values = np.sqrt(np.diag(pcovg))
             else:
-                poptg = mc_result[0][0]  # Best-fit parameters from MC
-                error_values = mc_result[0][1]  # Errors from MC
+                poptg = mc_result[0]  # Best-fit parameters from MC
+                error_values = mc_result[1]  # Errors from MC
         else:
             error_values = np.sqrt(np.diag(pcovg))
         
@@ -588,7 +673,7 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row = None, width=25, a
             doublet_ratio = const.wavedict[secondary_line] / const.wavedict[primary_line]
         elif np.any(const.slines == line_name):
             # Change the primary line name to the first line in the doublet
-            primary_line = const.slines[np.where(const.slines == line_name)[0][0] - 1][0]
+            primary_line = const.slines[np.where(const.slines == line_name)[0][0] - 1]
             secondary_line = line_name
             doublet_ratio = const.wavedict[secondary_line] / const.wavedict[primary_line]
     # What kind of function do we need to use, single or double Gaussian?
@@ -622,7 +707,9 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row = None, width=25, a
 
     # If the line is a doublet, we need to add the flux of the second component (other parameters are tied)
     if doublet:
-        flux_init_2 = row[f'FLUX_{secondary_line}'] if significant_fit else flux_init
+        # Check if the secondary line was also fitted (not NaN)
+        secondary_fit = significant_fit and not np.isnan(row[f'FLUX_{secondary_line}'])
+        flux_init_2 = row[f'FLUX_{secondary_line}'] if secondary_fit else flux_init
         param_names.extend(['FLUX2'])
         p0.extend([flux_init_2])
         # Also extend the bounds
@@ -637,15 +724,11 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row = None, width=25, a
     bounds[1].extend([2000, 1000])
     param_names.extend(['CONT', 'SLOPE'])
 
-    # Now perform fitting with error handling
+    # Create initial guesses and bounds dictionaries
     initial_guesses = dict(zip(param_names, p0))
     bounds_dict = {param : (bounds[0][i], bounds[1][i]) for i, param in enumerate(param_names)}
-    # Make sure initial guesses are not out of bounds:
-    for param, value in initial_guesses.items():
-        if value < bounds_dict[param][0]:
-            initial_guesses[param] = bounds_dict[param][0] * 1.1 # If the initial guess is smaller than the bounds, replace with this
-        elif value > bounds_dict[param][1]:
-            initial_guesses[param] = bounds_dict[param][1] * 0.9 # If the initial guess is greater than the bounds, replace with this
+    
+    # fit_line will handle validation of initial guesses and bounds
     fit = fit_line(wave, spec, spec_err, primary_line, initial_guesses, bounds=bounds_dict,
                    continuum_buffer=width, plot_result=True, ax_in=ax_in,
                    bootstrap_params=bootstrap_params)

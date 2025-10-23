@@ -12,6 +12,7 @@ import os
 import astropy.table as aptb
 import error_propagation as ep
 from mpdaf.MUSE import LSF
+from pathlib import Path
 
 # Import constants
 from .constants import c, wavedict, doublets, skylines
@@ -180,54 +181,92 @@ def vel2wave(vel, restLambda, z = 0.):
 
 def get_data_dir():
     """
-    Get the base data directory from environment variables.
-    Checks in order: ASTRO_DATA_DIR, then defaults to ~/.astro_data
+    Get the base data directory from the ASTRO_DATA_DIR environment variable.
+    If not set, prompts the user to provide the path.
     Returns the path as a string.
     """
-    import os
-    from pathlib import Path
     
     data_dir = os.environ.get('ASTRO_DATA_DIR')
     if data_dir:
         return data_dir
     
-    # Default to user's home directory
-    default_dir = Path.home() / '.astro_data'
-    return str(default_dir)
+    # Prompt user for the path
+    print("\nASTRO_DATA_DIR environment variable not set.")
+    print("Please provide the path to your astronomy data directory.")
+    
+    try:
+        user_path = input("Enter data directory path: ").strip()
+        if user_path:
+            # Set the environment variable for this session
+            os.environ['ASTRO_DATA_DIR'] = user_path
+            print(f"Using: {user_path}")
+            print(f"To make this permanent, add to your ~/.bashrc:")
+            print(f"  export ASTRO_DATA_DIR={user_path}")
+            return user_path
+        else:
+            raise ValueError("ASTRO_DATA_DIR is required but not provided.")
+    except (EOFError, KeyboardInterrupt):
+        raise ValueError("\nASTRO_DATA_DIR is required but not provided.")
 
 def get_spectra_dir():
     """
-    Get the R21 spectra directory from environment variable or construct from base data dir.
+    Get the R21 spectra directory from the R21_SPECTRA_DIR environment variable.
+    If not set, prompts the user to provide the path.
     Returns the path as a string.
     """
-    import os
-    from pathlib import Path
     
-    # Check for explicit override
     spectra_dir = os.environ.get('R21_SPECTRA_DIR')
     if spectra_dir:
         return spectra_dir
     
-    # Otherwise construct from base data directory
-    base_dir = get_data_dir()
-    return str(Path(base_dir) / 'muse_catalogs' / 'spectra')
+    # Prompt user for the path
+    print("\nR21_SPECTRA_DIR environment variable not set.")
+    print("Please provide the path to the R21 spectra directory.")
+    print("(This should contain subdirectories for each cluster, e.g., A2744/, MACS0416/, etc.)")
+    
+    try:
+        user_path = input("Enter R21 spectra directory path: ").strip()
+        if user_path:
+            # Set the environment variable for this session
+            os.environ['R21_SPECTRA_DIR'] = user_path
+            print(f"Using: {user_path}")
+            print(f"To make this permanent, add to your ~/.bashrc:")
+            print(f"  export R21_SPECTRA_DIR={user_path}")
+            return user_path
+        else:
+            raise ValueError("R21_SPECTRA_DIR is required but not provided.")
+    except (EOFError, KeyboardInterrupt):
+        raise ValueError("\nR21_SPECTRA_DIR is required but not provided.")
 
 def get_source_spectra_dir():
     """
-    Get the source spectra directory from environment variable or construct from base data dir.
+    Get the source spectra directory from the SOURCE_SPECTRA_DIR environment variable.
+    If not set, prompts the user to provide the path.
     Returns the path as a string.
     """
-    import os
-    from pathlib import Path
     
-    # Check for explicit override
     source_dir = os.environ.get('SOURCE_SPECTRA_DIR')
     if source_dir:
         return source_dir
     
-    # Otherwise construct from base data directory
-    base_dir = get_data_dir()
-    return str(Path(base_dir) / 'source_spectra')
+    # Prompt user for the path
+    print("\nSOURCE_SPECTRA_DIR environment variable not set.")
+    print("Please provide the path to the source spectra directory.")
+    print("(This should contain subdirectories for each cluster with individual source spectra)")
+    
+    try:
+        user_path = input("Enter source spectra directory path: ").strip()
+        if user_path:
+            # Set the environment variable for this session
+            os.environ['SOURCE_SPECTRA_DIR'] = user_path
+            print(f"Using: {user_path}")
+            print(f"To make this permanent, add to your ~/.bashrc:")
+            print(f"  export SOURCE_SPECTRA_DIR={user_path}")
+            return user_path
+        else:
+            raise ValueError("SOURCE_SPECTRA_DIR is required but not provided.")
+    except (EOFError, KeyboardInterrupt):
+        raise ValueError("\nSOURCE_SPECTRA_DIR is required but not provided.")
 
 def get_spectra_url():
     """
@@ -519,7 +558,7 @@ def find_partner(linename, linelist=None):
 
 
 def flag_fitted_line(megatab, index, linename, spectab=None, 
-                     fwhm_threshold=2.41, verbose=False):
+                     fwhm_threshold=2.41, verbose=True):
     """
     Apply automatic quality flags to a fitted spectral line in a megatable.
     
@@ -686,10 +725,16 @@ def flag_fitted_line(megatab, index, linename, spectab=None,
         # Apply new flags
         if tests['sky']:
             flag_string += 's'
+            if verbose:
+                print(f"  Applying flag 's': Sky line contamination detected")
         if tests['thin']:
             flag_string += 't'
+            if verbose:
+                print(f"  Applying flag 't': Line too thin (FWHM={fwhm:.2f} < {fwhm_threshold:.2f} Å)")
         if tests['peakdominant']:
             flag_string += 'p'
+            if verbose:
+                print(f"  Applying flag 'p': Peak-dominated line")
         
         megatab[flag_col][index] = flag_string
     
@@ -697,10 +742,10 @@ def flag_fitted_line(megatab, index, linename, spectab=None,
     
     if verbose:
         print(f"\nFlagging results for {linename}:")
-        for test_name, result in tests.items():
-            if test_name != 'flags_applied':
-                print(f"  {test_name.upper()}: {result}")
-        print(f"  Flags applied: '{flag_string}'")
+        if flag_string:
+            print(f"  Flags applied: '{flag_string}'")
+        else:
+            print(f"  No flags raised")
     
     return tests
 
