@@ -45,10 +45,33 @@ def which_fit_method(linename):
 from numpy.polynomial import Polynomial as nppoly
 
 def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
-    """Estimate correlation length by fitting exponential decay to ACF.
+    """Estimate noise correlation length from spectral residuals.
+    
+    Designed for astronomical spectroscopy: estimates short-scale correlations
+    (typically 1-5 pixels) that could cause correlated noise peaks to mimic
+    emission lines. Uses residuals after model fitting to focus on noise structure.
     
     Returns the e-folding length τ where ACF(τ) = 1/e ≈ 0.368.
-    This is more principled than threshold crossing.
+    Conservative by design: better to overestimate τ (inflate MC errors) than 
+    underestimate (overconfident fits).
+    
+    Parameters:
+    -----------
+    wave : array
+        Wavelength array (used for baseline fitting)
+    spec : array  
+        Spectral residuals (observed - model) or flux values
+    max_lag : int
+        Maximum lag to search for correlations (default: 10)
+        For line detection, use ~5-10 pixels
+    baseline_order : int or None
+        Polynomial order for baseline removal before ACF
+        Use None (mean removal) for residuals, 0-2 for raw spectra
+    
+    Returns:
+    --------
+    tau : float
+        Correlation length in pixels (>= 1.0)
     """
     # 1. Baseline removal with diagnostics
     if baseline_order is not None:
@@ -86,36 +109,61 @@ def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
             break
     
     # 5. Fit exponential decay ACF(k) = exp(-k/τ) to estimate τ
-    # Only fit to points above threshold
-    if crossing_lag is not None:
-        fit_range = crossing_lag + 2  # Fit a bit beyond crossing
+    # For spectroscopy: focus on short lags (1-5 pixels) where noise mimics lines
+    # Don't fit too far - long-range correlations from baseline structure aren't relevant
+    
+    # Restrict fitting to short lags relevant for line detection
+    # Use crossing lag as guide, but cap at max_lag
+    if crossing_lag is not None and 3 <= crossing_lag <= max_lag:
+        # Found a clear crossing within search range
+        fit_up_to = crossing_lag
+    elif crossing_lag is not None and crossing_lag < 3:
+        # Very short correlation - fit up to lag 5 to be sure
+        fit_up_to = min(5, max_lag)
     else:
-        fit_range = max_lag
+        # No crossing found - use max_lag but warn
+        fit_up_to = max_lag
+        if acf[max_lag] > threshold:
+            print(f"WARNING: ACF({max_lag}) = {acf[max_lag]:.3f} still above threshold")
+            print(f"         Long-range correlation detected - may be baseline structure")
     
-    lags = np.arange(1, min(fit_range, len(acf)))
-    acf_to_fit = acf[1:fit_range]
+    # Fit exponential to early lags
+    lags = np.arange(1, min(fit_up_to + 1, len(acf)))
+    acf_to_fit = acf[1:min(fit_up_to + 1, len(acf))]
     
-    # Only fit positive ACF values (take log)
-    valid_mask = acf_to_fit > threshold
-    if np.sum(valid_mask) >= 2:  # Need at least 2 points to fit
+    # Only fit where ACF is positive and meaningful (> 0.05)
+    min_acf_value = 0.05
+    valid_mask = acf_to_fit > min_acf_value
+    n_valid = np.sum(valid_mask)
+    
+    print(f"Fitting range: lags 1-{len(lags)}, {n_valid}/{len(lags)} valid points (ACF > {min_acf_value})")
+    
+    if n_valid >= 3:
         try:
-            # Fit log(ACF) = -k/τ  =>  slope = -1/τ
-            # Weight by 1/sqrt(k) to give more weight to early lags
+            # Weighted exponential fit: log(ACF) = -k/τ
+            # Extra weight to early lags (most relevant for line detection)
             weights = 1.0 / np.sqrt(lags[valid_mask])
             coeffs = np.polyfit(lags[valid_mask], np.log(acf_to_fit[valid_mask]), 
                                deg=1, w=weights)
             tau_fit = -1.0 / coeffs[0]
             
-            # Sanity check: tau should be positive and reasonable
+            # Sanity check: expect short correlations (0.5 to ~2*max_lag)
+            # For spurious line detection, τ > max_lag means long-range structure
             if 0.5 <= tau_fit <= 2 * max_lag:
-                print(f"Fitted τ = {tau_fit:.2f} pixels (exponential decay)")
+                print(f"Fitted τ = {tau_fit:.2f} pixels (exponential fit)")
                 if crossing_lag is not None:
-                    print(f"Threshold crossing at lag {crossing_lag} (ACF={acf[crossing_lag]:.3f})")
-                return max(1.0, tau_fit)  # Return at least 1
+                    print(f"(Threshold crossing at lag {crossing_lag})")
+                return max(1.0, tau_fit)
             else:
-                print(f"Fitted τ = {tau_fit:.2f} outside reasonable range, using fallback")
-        except (np.linalg.LinAlgError, RuntimeError) as e:
-            print(f"Exponential fit failed: {e}, using fallback")
+                print(f"Fitted τ = {tau_fit:.2f} outside expected range [0.5, {2*max_lag}]")
+                # If too large, cap at max_lag (conservative)
+                if tau_fit > 2 * max_lag:
+                    print(f"Using τ = {max_lag} (capped - likely baseline structure)")
+                    return float(max_lag)
+        except (np.linalg.LinAlgError, RuntimeError, ValueError) as e:
+            print(f"Exponential fit failed: {e}")
+    else:
+        print(f"Not enough valid points for fitting (need ≥3, have {n_valid})")
     
     # 6. Fallback to threshold crossing or max_lag
     if crossing_lag is not None:
@@ -172,23 +220,57 @@ def avgfunc(poptl, errfunc, sig_clip = 7.0):
 def fit_mc(f, x, y, yerr, p0, bounds=None, niter=500, errfunc='mad',
            return_sample=False, chisq_thresh=np.inf, sig_clip=7.0,
            autocorrelation=False, max_lag=10, baseline_order=0, max_nfev=5000):
-    """Enhanced MC fitting with robust correlation handling.
-    f              : model function to fit
-    x              : independent variable data
-    y              : dependent variable data
-    yerr           : uncertainties in y
-    p0             : initial guess for the parameters
-    bounds         : bounds for the parameters (default: None)
-    niter          : number of Monte Carlo iterations (default: 1000)
-    errfunc        : function to estimate parameter uncertainties ('stddev' or 'mad', default: 'stddev')
-    return_sample  : whether to return the full sample of fitted parameters (default: False)
-    chisq_thresh   : chi-square threshold to filter fits (default: np.inf, no filtering)
-    sig_clip       : sigma clipping threshold for stddev calculation (default: 7.0)
-    autocorrelation: whether to estimate correlation length from residuals (default: False)
-                     or provide a fixed integer value for correlation length
-    max_lag        : maximum lag to consider in autocorrelation (default: 10)
-    baseline_order : order of polynomial baseline to subtract before autocorrelation (default: 0)
-    max_nfev       : maximum number of function evaluations for curve_fit (default: 10000)
+    """Monte Carlo fitting with correlated noise handling for spectroscopy.
+    
+    Fits a model to data and estimates parameter uncertainties via Monte Carlo
+    resampling. Can account for correlated noise in residuals to avoid 
+    underestimating errors when noise correlation mimics emission line structure.
+    
+    Parameters:
+    -----------
+    f : callable
+        Model function to fit: f(x, *params)
+    x : array
+        Independent variable (e.g., wavelength)
+    y : array
+        Dependent variable (e.g., flux)
+    yerr : array
+        Uncertainties in y
+    p0 : array
+        Initial guess for parameters
+    bounds : tuple of arrays, optional
+        Lower and upper bounds for parameters
+    niter : int
+        Number of Monte Carlo iterations (default: 500)
+    errfunc : str
+        Error estimation method: 'mad' or 'stddev' (default: 'mad')
+    return_sample : bool
+        Return full MC sample in addition to mean/error (default: False)
+    chisq_thresh : float
+        Chi-square threshold to filter bad fits (default: np.inf, no filter)
+    sig_clip : float
+        Sigma clipping threshold for stddev (default: 7.0)
+    autocorrelation : bool or int
+        - False: assume uncorrelated noise (default)
+        - True: estimate correlation length from fit residuals
+        - int: use fixed correlation length in pixels
+        For spectroscopy, use max_lag=5-10 to focus on line-scale correlations
+    max_lag : int
+        Maximum lag for ACF estimation (default: 10 pixels)
+        Relevant for detecting spurious lines from correlated noise
+    baseline_order : int
+        Polynomial order for baseline removal in ACF (default: 0)
+        Use 0 for residuals, 1-2 for raw spectra with trends
+    max_nfev : int
+        Max function evaluations per fit (default: 5000)
+    
+    Returns:
+    --------
+    If return_sample=False:
+        [params, errors] : list of arrays
+    If return_sample=True:
+        ([params, errors], sample) : tuple
+            where sample is (niter, nparams) array of all fitted parameters
     """
 
     try:
@@ -200,7 +282,7 @@ def fit_mc(f, x, y, yerr, p0, bounds=None, niter=500, errfunc='mad',
         if isinstance(autocorrelation, bool) and autocorrelation:
             residuals = y - f(x, *popt)
             correlation_length = autocorr_length(x, residuals, max_lag, baseline_order)
-            print(f"Estimated correlation length: {correlation_length} pixels")
+            print(f"Estimated correlation length: {correlation_length:.3f} pixels")
         elif isinstance(autocorrelation, bool) and not autocorrelation:
             correlation_length = 1
         elif isinstance(autocorrelation, int):
