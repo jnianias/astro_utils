@@ -330,7 +330,7 @@ def insert_fit_results(megatab, clus, iden, lya_results, other_results, avgmu, f
     megatab['iden'][row_index] = iden
 
 
-def update_table(megatable, index, linename, params, param_errs, rchsq):
+def update_table(megatable, index, linename, params, param_errs, rchsq, flag=''):
     """
     Update a table with new fit parameters and statistics for a given index.
     
@@ -352,6 +352,13 @@ def update_table(megatable, index, linename, params, param_errs, rchsq):
         Dictionary of fit parameter errors (e.g., {'FLUXB': 0.1, 'FLUXR': 0.2})
     rchsq : float
         Reduced chi-squared value of the fit
+    flag : str, optional
+        Quality flag for the fit (default: ''). Common flags:
+        - 'm': Multiple comparable peaks detected
+        - 's': Sky line contamination
+        - 't': Line too thin
+        - 'p': Peak-dominated
+        - 'c': Contamination
         
     Notes
     -----
@@ -359,6 +366,7 @@ def update_table(megatable, index, linename, params, param_errs, rchsq):
         - Parameters: 'FLUXB', 'FLUXR', 'FWHMB', etc. (no suffix)
         - Errors: 'FLUXB_ERR', 'FLUXR_ERR', etc. (no line name suffix)
         - Stats: 'RCHSQ', 'SNRB', 'SNRR' (no line name suffix)
+        - Flag: 'FLAG' (no line name suffix)
         - SNRB calculated from FLUXB / FLUXB_ERR
         - SNRR calculated from FLUXR / FLUXR_ERR
     
@@ -366,6 +374,7 @@ def update_table(megatable, index, linename, params, param_errs, rchsq):
         - Parameters: 'FLUX_CIII', 'FWHM_CIII', etc.
         - Errors: 'FLUX_ERR_CIII', 'FWHM_ERR_CIII', etc.
         - Stats: 'RCHSQ_CIII', 'SNR_CIII', etc.
+        - Flag: 'FLAG_CIII'
         - SNR calculated from FLUX / FLUX_ERR
     """
     # Check if this is a Lyman alpha fit
@@ -429,3 +438,13 @@ def update_table(megatable, index, linename, params, param_errs, rchsq):
             snr_col = f"SNR_{linename}"
             if snr_col in megatable.colnames:
                 megatable[snr_col][index] = snr
+    
+    # Update flag column if provided
+    if flag:
+        if is_lya:
+            flag_col = "FLAG"
+        else:
+            flag_col = f"FLAG_{linename}"
+        
+        if flag_col in megatable.colnames:
+            megatable[flag_col][index] = flag
