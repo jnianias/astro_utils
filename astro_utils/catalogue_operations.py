@@ -328,3 +328,104 @@ def insert_fit_results(megatab, clus, iden, lya_results, other_results, avgmu, f
 
     # Finally, update the identifier with the 'S' prefix to indicate stacked spectrum
     megatab['iden'][row_index] = iden
+
+
+def update_table(megatable, index, linename, params, param_errs, rchsq):
+    """
+    Update a table with new fit parameters and statistics for a given index.
+    
+    For Lyman alpha fits, uses special column naming conventions (e.g., 'FLUXB', 'RCHSQ').
+    For other lines, appends the line name to column names (e.g., 'FLUX_CIII', 'RCHSQ_CIII').
+    SNR values are calculated automatically from flux and error parameters.
+    
+    Parameters
+    ----------
+    megatable : astropy.table.Table
+        The table to update
+    index : int
+        The index of the row to update
+    linename : str
+        Name of the emission line (e.g., 'lya', 'CIII', 'OIII')
+    params : dict
+        Dictionary of fit parameters (e.g., {'FLUXB': 1.2, 'FLUXR': 3.4, 'CONT': 0.5})
+    param_errs : dict
+        Dictionary of fit parameter errors (e.g., {'FLUXB': 0.1, 'FLUXR': 0.2})
+    rchsq : float
+        Reduced chi-squared value of the fit
+        
+    Notes
+    -----
+    For Lyman alpha (linename='lya' or 'Lya'), column names are:
+        - Parameters: 'FLUXB', 'FLUXR', 'FWHMB', etc. (no suffix)
+        - Errors: 'FLUXB_ERR', 'FLUXR_ERR', etc. (no line name suffix)
+        - Stats: 'RCHSQ', 'SNRB', 'SNRR' (no line name suffix)
+        - SNRB calculated from FLUXB / FLUXB_ERR
+        - SNRR calculated from FLUXR / FLUXR_ERR
+    
+    For other lines, column names include the line name:
+        - Parameters: 'FLUX_CIII', 'FWHM_CIII', etc.
+        - Errors: 'FLUX_ERR_CIII', 'FWHM_ERR_CIII', etc.
+        - Stats: 'RCHSQ_CIII', 'SNR_CIII', etc.
+        - SNR calculated from FLUX / FLUX_ERR
+    """
+    # Check if this is a Lyman alpha fit
+    is_lya = linename.lower() in ['lya', 'lyman_alpha', 'lyalpha']
+    
+    # Update parameters
+    for key, value in params.items():
+        if is_lya:
+            # For Lyman alpha, use parameter name directly
+            colname = key
+        else:
+            # For other lines, append line name
+            colname = f"{key}_{linename}"
+        
+        if colname in megatable.colnames:
+            megatable[colname][index] = value
+    
+    # Update parameter errors
+    for key, value in param_errs.items():
+        if is_lya:
+            # For Lyman alpha, use parameter name with _ERR suffix
+            colname = f"{key}_ERR"
+        else:
+            # For other lines, append ERR and line name
+            colname = f"{key}_ERR_{linename}"
+        
+        if colname in megatable.colnames:
+            megatable[colname][index] = value
+    
+    # Update reduced chi-squared
+    if is_lya:
+        rchsq_col = "RCHSQ"
+    else:
+        rchsq_col = f"RCHSQ_{linename}"
+    
+    if rchsq_col in megatable.colnames:
+        megatable[rchsq_col][index] = rchsq
+    
+    # Calculate and update SNR values
+    if is_lya:
+        # For Lyman alpha, calculate separate blue and red SNR
+        if 'FLUXB' in params and 'FLUXB' in param_errs:
+            fluxb = params['FLUXB']
+            fluxb_err = param_errs['FLUXB']
+            snrb = fluxb / fluxb_err if fluxb_err > 0 else np.nan
+            if "SNRB" in megatable.colnames:
+                megatable["SNRB"][index] = snrb
+        
+        if 'FLUXR' in params and 'FLUXR' in param_errs:
+            fluxr = params['FLUXR']
+            fluxr_err = param_errs['FLUXR']
+            snrr = fluxr / fluxr_err if fluxr_err > 0 else np.nan
+            if "SNRR" in megatable.colnames:
+                megatable["SNRR"][index] = snrr
+    else:
+        # For other lines, calculate SNR from flux and error if available
+        if 'FLUX' in params and 'FLUX' in param_errs:
+            flux = params['FLUX']
+            flux_err = param_errs['FLUX']
+            snr = flux / flux_err if flux_err > 0 else np.nan
+            snr_col = f"SNR_{linename}"
+            if snr_col in megatable.colnames:
+                megatable[snr_col][index] = snr

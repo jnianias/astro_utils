@@ -14,11 +14,85 @@ import error_propagation as ep
 from mpdaf.MUSE import LSF
 
 # Import constants
-from .constants import c, wavedict, doublets
+from .constants import c, wavedict, doublets, skylines
 from . import models as mdl
-from . import fitting as fit
+
+# Import dictionaries for convenience
+skylinedict = skylines
+doubletdict = doublets
 
 lsf = LSF(typ='qsim_v1')
+
+
+def mask_skylines(wavelength):
+    """
+    Masks out regions around known sky lines to avoid contamination in fits.
+
+    wavelength: wavelength array
+    lambda_obs: observed wavelength of the line
+    continuum_buffer: buffer region around the line to include in the fit
+    """
+    sky_mask = np.ones_like(wavelength, dtype=bool)
+
+    for skyline in skylinedict.values():
+        sky_mask &= ~((wavelength > (skyline - 2.5)) & (wavelength < (skyline + 2.5)))
+
+    return sky_mask
+
+def mask_otherlines(wavelength, expected_wavelength, linename):
+    """
+    Mask out regions around other known lines to avoid contamination in fits.
+    
+    wavelength: wavelength array
+    linename  : name of the line (needs to be in wavedict)
+    """
+    # Get all other lines except the one being fitted and its doublet partner (if any)
+    otherlines = [line for line in wavedict.keys() 
+                  if (line != linename and line not in doubletdict.get(linename, ()) 
+                      and linename not in doubletdict.get(line, ()))]
+    
+    # Initialize mask to all True
+    line_mask = np.ones_like(wavelength, dtype=bool)
+
+    # Get the expected redshift
+    z_exp = (expected_wavelength / wavedict[linename]) - 1
+
+    # Mask out +/- 2.5 Angstroms around each other line
+    for line in otherlines:
+        line_center = wavedict[line] * (1 + z_exp)
+        line_mask &= ~((wavelength > (line_center - 2.5)) & (wavelength < (line_center + 2.5)))
+
+    return line_mask
+
+def generate_spec_mask(wavelength, spectrum, errors, lpeak_init, continuum_buffer, linename):
+    """
+    Generates a mask for the fitting region around a specified observed wavelength,
+    excluding problematic areas (zeros, nans, infs), skylines, and unrelated spectral lines.
+
+    wavelength: wavelength array
+    spectrum  : flux density array
+    errors    : flux density uncertainties
+    lpeak_init: initial guess for the observed wavelength of the line
+    continuum_buffer: buffer region around the line to include in the fit
+    linename   : name of the line (needs to be in wavedict)
+    """
+    # Fitting region +/- continuum_buffer around the line
+    fit_mask = (wavelength > (lpeak_init - continuum_buffer)) & (wavelength < (lpeak_init + continuum_buffer))
+
+    # Mask out problematic data points
+    fit_mask &= ~np.isnan(wavelength)
+    fit_mask &= ~np.isnan(spectrum)
+    fit_mask &= ~np.isnan(errors)
+    fit_mask &= spectrum != 0
+    fit_mask &= (errors > 0)
+    fit_mask &= ~np.isinf(spectrum)
+    fit_mask &= ~np.isinf(errors)
+
+    # Mask out skylines and other known lines
+    fit_mask &= mask_skylines(wavelength)
+    fit_mask &= mask_otherlines(wavelength, lpeak_init, linename)
+
+    return fit_mask
 
 def get_lsf_fwhm(lsf_lpeak, step = 1.25):
     x0up = np.argwhere(lsf_lpeak > 0.5 * np.max(lsf_lpeak))[0][0]
@@ -175,6 +249,21 @@ def get_spectra_url():
             raise ValueError("R21 spectra base URL is required but not provided.")
     except Exception:
         raise ValueError("R21 spectra base URL is required but not provided.")
+    
+def load_spec(clus, iden, idfrom, spec_source = 'R21', spectype = 'weight_skysub'):
+    """Loads a spectrum from the specified source
+    clus: Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+    iden: Identifier number of the object (e.g., 1234)
+    idfrom: Prefix letter of the identifier (e.g., 'E' for E1234)
+    spec_source: Source of the spectrum ('R21' for Richard et al. 2021, 'APER' for aperture spectra)
+    spectype: Type of spectrum to load (either 'weight_syksub' or '2fwhm', etc.)
+    """
+    if spec_source == 'R21':
+        return load_r21_spec(clus, iden, idfrom, spectype)
+    elif spec_source == 'APER':
+        return load_aper_spec(clus, iden, idfrom, spectype)
+    else:
+        raise ValueError(f"spec_source {spec_source} not recognized. Use 'R21' or 'APER'.")
 
 def load_r21_spec(clus, iden, idfrom, spectype):
     """Loads a spectrum from the Richard et al. (2021) catalog
@@ -390,7 +479,7 @@ def get_line_spec(row, line, width, rest = True, spec_source = 'R21', spectype =
         obs_width = width
     
     # Mask sky lines and bad data points
-    mask = fit.generate_spec_mask(spectab['wave'],
+    mask = generate_spec_mask(spectab['wave'],
                                     spectab['spec'],
                                     spectab['spec_err'],
                                     lpeak_init = line_wavelength,
@@ -398,3 +487,254 @@ def get_line_spec(row, line, width, rest = True, spec_source = 'R21', spectype =
                                     linename=line)
 
     return spectab['wave'][mask], spectab['spec'][mask], spectab['spec_err'][mask]
+
+
+def find_partner(linename, linelist=None):
+    """
+    Find the doublet partner of a given spectral line.
+    
+    Parameters:
+    -----------
+    linename : str
+        Name of the spectral line (e.g., 'CIV1548')
+    linelist : list, optional
+        List of line names to search for the partner. If None, uses all lines in doublets dict.
+    
+    Returns:
+    --------
+    str or None
+        Name of the partner line, or None if no partner exists
+    """
+    if linelist is None:
+        linelist = list(wavedict.keys())
+    
+    # Check each doublet
+    for key, (line1, line2) in doubletdict.items():
+        if linename == line1 and line2 in linelist:
+            return line2
+        elif linename == line2 and line1 in linelist:
+            return line1
+    
+    return None
+
+
+def flag_fitted_line(megatab, index, linename, spectab=None, 
+                     fwhm_threshold=2.41, verbose=False):
+    """
+    Apply automatic quality flags to a fitted spectral line in a megatable.
+    
+    This function performs several tests on a fitted spectral line to identify
+    potentially problematic measurements. Flags are applied as single characters:
+    - 's': Sky line contamination
+    - 't': Line too thin (FWHM below spectral resolution)
+    - 'p': Peak-dominated (peak significance exceeds integrated flux SNR)
+    
+    The function modifies the table in place by updating the FLAG column for the line.
+    
+    Parameters:
+    -----------
+    megatab : astropy.table.Table
+        Results table containing fitted line parameters. Must have columns:
+        - LPEAK_{linename}: Peak wavelength of the line
+        - LPEAK_ERR_{linename}: Error on peak wavelength
+        - FLUX_{linename}: Integrated flux of the line
+        - SNR_{linename}: Signal-to-noise ratio of the integrated flux
+        - FWHM_{linename}: Full width at half maximum
+        - FLAG_{linename}: Flag column (modified in place)
+        Optional columns for improved error propagation:
+        - FLUX_ERR_{linename}: Error on integrated flux (falls back to FLUX/SNR)
+        - FWHM_ERR_{linename}: Error on FWHM (falls back to 0 if not provided)
+    index : int
+        Row index in the table to flag
+    linename : str
+        Name of the spectral line (e.g., 'CIV1548', 'LYALPHA')
+    spectab : astropy.table.Table, optional
+        Spectrum table with columns 'wave', 'spec', 'spec_err'. If None, peak
+        significance test will be skipped. Required for complete flagging.
+    fwhm_threshold : float, optional
+        Minimum FWHM threshold in Angstroms (default: 2.41, MUSE spectral resolution)
+    verbose : bool, optional
+        If True, print diagnostic information about each test
+    
+    Returns:
+    --------
+    dict
+        Dictionary of test results with keys:
+        - 'sky': bool, True if sky line contamination detected
+        - 'thin': bool, True if FWHM below threshold
+        - 'peakdominant': bool, True if peak dominates over integrated flux
+        - 'contamination': bool, True if already flagged with 'c'
+        - 'flags_applied': str, The flag string that was applied
+    
+    Notes:
+    ------
+    - If the line has a doublet partner that is also detected (SNR > 3), all flags
+      are removed as the doublet provides confirmation of the detection.
+    - Pre-existing 'c' (contamination) flags from other analyses are preserved.
+    - Sky line contamination is checked against known sky line catalogs.
+    - Peak amplitude uncertainty is computed using proper error propagation via the
+      error_propagation package, accounting for uncertainties in both flux and FWHM.
+      If error columns are not present, flux error is estimated from FLUX/SNR.
+    
+    Example:
+    --------
+    >>> from astropy.table import Table
+    >>> import numpy as np
+    >>> megatab = Table({'LPEAK_CIV1548': [5000.0],
+    ...                  'LPEAK_ERR_CIV1548': [0.5],
+    ...                  'FLUX_CIV1548': [1e-17],
+    ...                  'SNR_CIV1548': [5.0],
+    ...                  'FWHM_CIV1548': [2.0],
+    ...                  'FLAG_CIV1548': ['']})
+    >>> result = flag_fitted_line(megatab, 0, 'CIV1548')
+    >>> print(megatab['FLAG_CIV1548'][0])
+    't'
+    """
+    row = megatab[index]
+    
+    # Get column names for this line
+    lpeak_col = f'LPEAK_{linename}'
+    lpeak_err_col = f'LPEAK_ERR_{linename}'
+    flux_col = f'FLUX_{linename}'
+    snr_col = f'SNR_{linename}'
+    fwhm_col = f'FWHM_{linename}'
+    flag_col = f'FLAG_{linename}'
+    
+    # Initialize test results
+    tests = {
+        'sky': False,
+        'thin': False,
+        'peakdominant': False,
+        'contamination': False,
+        'flags_applied': ''
+    }
+    
+    # Extract line parameters with errors where available
+    lpeak = row[lpeak_col]
+    lpeak_err = row[lpeak_err_col]
+    flux = row[flux_col]
+    snr = row[snr_col]
+    fwhm = row[fwhm_col]
+    current_flag = row[flag_col]
+    
+    # Get flux and FWHM errors if they exist
+    flux_err_col = f'FLUX_ERR_{linename}' if f'FLUX_ERR_{linename}' in megatab.colnames else None
+    fwhm_err_col = f'FWHM_ERR_{linename}' if f'FWHM_ERR_{linename}' in megatab.colnames else None
+    
+    flux_err = row[flux_err_col] if flux_err_col else np.abs(flux / snr)
+    fwhm_err = row[fwhm_err_col] if fwhm_err_col else 0.0
+    
+    # Check for pre-existing contamination flag
+    if current_flag == 'c':
+        tests['contamination'] = True
+    
+    # Test 1: Sky line contamination
+    # Check if the line peak coincides with any known sky lines
+    tests['sky'] = check_sky_contamination(lpeak, lpeak_err, flux)
+    
+    # Test 2: Line too thin (below spectral resolution)
+    tests['thin'] = (fwhm < fwhm_threshold)
+    
+    # Test 3: Peak-dominated line
+    # Calculate peak amplitude with proper error propagation
+    if spectab is not None:
+        # Use error_propagation to compute amplitude and its uncertainty
+        # amp = flux / (sigma * sqrt(2*pi)), where sigma = fwhm / (2 * sqrt(2*ln(2)))
+        flux_complex = ep.Complex(flux, flux_err)
+        fwhm_complex = ep.Complex(fwhm, fwhm_err)
+        
+        # sigma = fwhm / 2.355
+        sigma_complex = fwhm_complex / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        
+        # amp = flux / (sigma * sqrt(2*pi))
+        amp_complex = flux_complex / (sigma_complex * np.sqrt(2.0 * np.pi))
+        
+        # Get the continuum uncertainty at the line peak from the spectrum
+        cont_err = np.interp(lpeak, spectab['wave'], spectab['spec_err'])
+        
+        # Peak significance is the ratio of amplitude to continuum uncertainty
+        peak_snr = np.abs(amp_complex.value / cont_err)
+        tests['peakdominant'] = (peak_snr > np.abs(snr))
+        
+        if verbose:
+            print(f"Peak amplitude: {amp_complex.value:.2e} +/- {amp_complex.error:.2e}")
+            print(f"Continuum error: {cont_err:.2e}")
+            print(f"Peak SNR: {peak_snr:.2f}, Integrated SNR: {snr:.2f}")
+    
+    # Check for doublet partner
+    partner = find_partner(linename, list(wavedict.keys()))
+    if partner is not None:
+        partner_snr_col = f'SNR_{partner}'
+        partner_flag_col = f'FLAG_{partner}'
+        # If both lines in doublet are detected, remove all flags
+        if partner_snr_col in megatab.colnames:
+            if np.abs(row[partner_snr_col]) > 3.0 and np.abs(snr) > 3.0:
+                if verbose:
+                    print(f"Doublet partner {partner} detected - removing flags")
+                megatab[flag_col][index] = ''
+                if partner_flag_col in megatab.colnames:
+                    megatab[partner_flag_col][index] = ''
+                tests['flags_applied'] = ''
+                return tests
+    
+    # Apply flags (skip contamination as it's pre-existing)
+    flag_string = ''
+    if not tests['contamination']:
+        # Clear any non-contamination flags
+        megatab[flag_col][index] = ''
+        
+        # Apply new flags
+        if tests['sky']:
+            flag_string += 's'
+        if tests['thin']:
+            flag_string += 't'
+        if tests['peakdominant']:
+            flag_string += 'p'
+        
+        megatab[flag_col][index] = flag_string
+    
+    tests['flags_applied'] = flag_string
+    
+    if verbose:
+        print(f"\nFlagging results for {linename}:")
+        for test_name, result in tests.items():
+            if test_name != 'flags_applied':
+                print(f"  {test_name.upper()}: {result}")
+        print(f"  Flags applied: '{flag_string}'")
+    
+    return tests
+
+
+def check_sky_contamination(lpeak, lpeak_err, flux, sig=5):
+    """
+    Check if a spectral line coincides with known sky lines.
+    
+    Parameters:
+    -----------
+    lpeak : float
+        Peak wavelength of the fitted line
+    lpeak_err : float
+        Error on the peak wavelength
+    flux : float
+        Integrated flux of the line
+    sig : float, optional
+        Significance threshold for sky line contamination (default: 5)
+    
+    Returns:
+    --------
+    bool
+        True if sky line contamination is detected
+    """
+    # Check tolerance: use 3-sigma or minimum of 2.4 Angstroms
+    tol = np.nanmax([lpeak_err * 3.0, 2.4])
+    
+    # Check strong sky lines first
+    for skyline_wave in skylinedict.values():
+        if (lpeak - tol < skyline_wave < lpeak + tol):
+            return True
+    
+    # Note: Full sky line catalog checking would require loading an external catalog
+    # For now, we only check against the strong lines defined in constants
+    # Users can extend this by loading the full MUSE sky line catalog if needed
+    
+    return False

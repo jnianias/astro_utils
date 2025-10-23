@@ -14,6 +14,10 @@ from . import plotting
 from . import sky_tools
 from . import spectroscopy
 
+# Import new Lya-specific modules
+from . import lya_profile
+from . import lya_fitting
+
 # Define what gets imported with "from astro_utils import *"
 __all__ = [
     'catalogue_operations',
@@ -26,6 +30,8 @@ __all__ = [
     'plotting',
     'sky_tools',
     'spectroscopy',
+    'lya_profile',      # New module
+    'lya_fitting',      # New module
 ]
 
 __version__ = '0.1'

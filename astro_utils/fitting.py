@@ -11,81 +11,15 @@ from . import spectroscopy as spectro
 import matplotlib.pyplot as plt
 import error_propagation as ep
 
+# Import moved components for backwards compatibility
+from .spectroscopy import generate_spec_mask, mask_skylines, mask_otherlines
+
 # Import dictionary of line wavelengths and speed of light
 wavedict    = const.wavedict
 doubletdict = const.doublets
 skylinedict = const.skylines
 c           = const.c  # speed of light in km/s
 
-def mask_skylines(wavelength):
-    """
-    Masks out regions around known sky lines to avoid contamination in fits.
-
-    wavelength: wavelength array
-    lambda_obs: observed wavelength of the line
-    continuum_buffer: buffer region around the line to include in the fit
-    """
-    sky_mask = np.ones_like(wavelength, dtype=bool)
-
-    for skyline in skylinedict.values():
-        sky_mask &= ~((wavelength > (skyline - 2.5)) & (wavelength < (skyline + 2.5)))
-
-    return sky_mask
-
-def mask_otherlines(wavelength, expected_wavelength, linename):
-    """
-    Mask out regions around other known lines to avoid contamination in fits.
-    
-    wavelength: wavelength array
-    linename  : name of the line (needs to be in wavedict)
-    """
-    # Get all other lines except the one being fitted and its doublet partner (if any)
-    otherlines = [line for line in wavedict.keys() 
-                  if (line != linename and line not in doubletdict.get(linename, ()) 
-                      and linename not in doubletdict.get(line, ()))]
-    
-    # Initialize mask to all True
-    line_mask = np.ones_like(wavelength, dtype=bool)
-
-    # Get the expected redshift
-    z_exp = (expected_wavelength / wavedict[linename]) - 1
-
-    # Mask out +/- 2.5 Angstroms around each other line
-    for line in otherlines:
-        line_center = wavedict[line] * (1 + z_exp)
-        line_mask &= ~((wavelength > (line_center - 2.5)) & (wavelength < (line_center + 2.5)))
-
-    return line_mask
-
-def generate_spec_mask(wavelength, spectrum, errors, lpeak_init, continuum_buffer, linename):
-    """
-    Generates a mask for the fitting region around a specified observed wavelength,
-    excluding problematic areas (zeros, nans, infs), skylines, and unrelated spectral lines.
-
-    wavelength: wavelength array
-    spectrum  : flux density array
-    errors    : flux density uncertainties
-    lpeak_init: initial guess for the observed wavelength of the line
-    continuum_buffer: buffer region around the line to include in the fit
-    linename   : name of the line (needs to be in wavedict)
-    """
-    # Fitting region +/- continuum_buffer around the line
-    fit_mask = (wavelength > (lpeak_init - continuum_buffer)) & (wavelength < (lpeak_init + continuum_buffer))
-
-    # Mask out problematic data points
-    fit_mask &= ~np.isnan(wavelength)
-    fit_mask &= ~np.isnan(spectrum)
-    fit_mask &= ~np.isnan(errors)
-    fit_mask &= spectrum != 0
-    fit_mask &= (errors > 0)
-    fit_mask &= ~np.isinf(spectrum)
-    fit_mask &= ~np.isinf(errors)
-
-    # Mask out skylines and other known lines
-    fit_mask &= mask_skylines(wavelength)
-    fit_mask &= mask_otherlines(wavelength, lpeak_init, linename)
-
-    return fit_mask
 
 def which_fit_method(linename):
     """
@@ -327,7 +261,8 @@ def check_inputs(p0, bounds):
         
 
 def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {},
-             continuum_buffer = 25., plot_result = True, ax_in = None):
+             continuum_buffer = 25., plot_result = True, ax_in = None,
+             bootstrap_params: Optional[BootstrapParams] = None):
     """
     Fits a single or double gaussian profile to a line (plus its doublet partner if it has one).
     If the line is Lyman alpha, returns the result of a more complex fitting procedure.
@@ -337,9 +272,13 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
     errors    : flux density uncertainties
     linename  : name of the line (needs to be in wavedict)
     initial_guesses: dictionary of initial guesses of parameters (LPEAK is required, others optional)
+    bounds    : dictionary of parameter bounds
     continuum_buffer: buffer region around the line to include in the fit
     plot_result: whether to plot the fitting result
     ax_in     : axis to plot on (if plot_result is True)
+    bootstrap_params: optional dictionary of parameters for Monte Carlo error estimation
+                      (niter, errfunc, chisq_thresh, sig_clip, autocorrelation, max_lag, 
+                       baseline_order, max_nfev). If None, uses standard curve_fit errors.
     """
 
     # If the line is Lyman alpha, use the specialised Lyman alpha fitting function
@@ -451,11 +390,34 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
             print("All curve_fit attempts failed for doublet fit.")
             return {}
         
-        # If the fit went OK, populate the parameter dictionary
+        # If bootstrap_params provided, use fit_mc for error estimation
+        if bootstrap_params is not None:
+            print("Using Monte Carlo error estimation for doublet fit...")
+            mc_result = fit_mc(
+                model, wl_fit, spec_fit, err_fit, poptg, bounds=bounds,
+                niter=bootstrap_params.get('niter', 500),
+                errfunc=bootstrap_params.get('errfunc', 'std'),
+                chisq_thresh=bootstrap_params.get('chisq_thresh', np.inf),
+                sig_clip=bootstrap_params.get('sig_clip', 7.0),
+                autocorrelation=bootstrap_params.get('autocorrelation', False),
+                max_lag=bootstrap_params.get('max_lag', 5),
+                baseline_order=bootstrap_params.get('baseline_order', 0),
+                max_nfev=bootstrap_params.get('max_nfev', 5000)
+            )
+            if mc_result is None:
+                print("Monte Carlo error estimation failed, using curve_fit errors")
+                error_values = np.sqrt(np.diag(pcovg))
+            else:
+                poptg = mc_result[0][0]  # Best-fit parameters from MC
+                error_values = mc_result[0][1]  # Errors from MC
+        else:
+            error_values = np.sqrt(np.diag(pcovg))
+        
+        # Populate the parameter dictionary
         param_list = ['FLUX', 'LPEAK', 'FWHM', 'FLUX2', 'CONT', 'SLOPE']
         param_dict = {param: val for param, val
                       in zip(param_list, poptg)}
-        error_dict = {param: np.sqrt(np.diag(pcovg))[i] 
+        error_dict = {param: error_values[i] 
                       for i, param in enumerate(param_list)}
      
         # Calculate the reduced chi-squared value of the fit
@@ -496,11 +458,34 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
             print("All curve_fit attempts failed for single line fit.")
             return {}
         
-        # If the fit went OK, populate the parameter dictionary
+        # If bootstrap_params provided, use fit_mc for error estimation
+        if bootstrap_params is not None:
+            print("Using Monte Carlo error estimation for single line fit...")
+            mc_result = fit_mc(
+                model, wl_fit, spec_fit, err_fit, poptg, bounds=bounds,
+                niter=bootstrap_params.get('niter', 500),
+                errfunc=bootstrap_params.get('errfunc', 'std'),
+                chisq_thresh=bootstrap_params.get('chisq_thresh', np.inf),
+                sig_clip=bootstrap_params.get('sig_clip', 7.0),
+                autocorrelation=bootstrap_params.get('autocorrelation', False),
+                max_lag=bootstrap_params.get('max_lag', 5),
+                baseline_order=bootstrap_params.get('baseline_order', 0),
+                max_nfev=bootstrap_params.get('max_nfev', 5000)
+            )
+            if mc_result is None:
+                print("Monte Carlo error estimation failed, using curve_fit errors")
+                error_values = np.sqrt(np.diag(pcovg))
+            else:
+                poptg = mc_result[0][0]  # Best-fit parameters from MC
+                error_values = mc_result[0][1]  # Errors from MC
+        else:
+            error_values = np.sqrt(np.diag(pcovg))
+        
+        # Populate the parameter dictionary
         param_list = ['FLUX', 'LPEAK', 'FWHM', 'CONT', 'SLOPE']
         param_dict = {param: val for param, val
                       in zip(param_list, poptg)}
-        error_dict = {param: np.sqrt(np.diag(pcovg))[i] 
+        error_dict = {param: error_values[i] 
                       for i, param in enumerate(param_list)}
      
         # Calculate the reduced chi-squared value of the fit
@@ -563,565 +548,10 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
         plt.close() if ax_in is None else None
 
     return fit_result
-        
 
 
-
-class LyaProfile:
-    """Class to fit Lyman-alpha emission line profiles using asymmetric Gaussian functions.
-    Supports both single-peak and double-peak profiles, as well as constant, linear or 
-    damped Lyman alpha baselines.
-    """
-
-    # Define parameter order and bounds for single and double peak models (class-level defaults)
-    lya_param_order_default = {
-        1: ['AMPR', 'LPEAKR', 'DISPR', 'ASYMR', 'CONT'],
-        2: ['AMPB', 'LPEAKB', 'DISPB', 'ASYMB', 'AMPR', 'LPEAKR', 'DISPR', 'ASYMR', 'CONT']
-    }
-    lya_bounds_default = {
-        1: ([0,      1215, 0.1,   -0.1, -np.inf],
-            [np.inf, 1225, 10,     0.1,  np.inf]),
-        2: ([0,      4600, 1.25,  -0.5,  0,      4600, 1.25,  -0.5, -50],
-            [1e7,    9350, np.inf, 0.5,  1e7,    9350, np.inf, 0.5,  1e4])
-    } # These are hard coded and suitable for MUSE spectra -- modify as needed
-
-
-    def __init__(self, paramdict, uncertainties):
-        """Initialize the lya_profile class using dictionaries of parameters and their uncertainties.
-        paramdict: Dictionary of initial parameter guesses.
-        uncertainties: Dictionary of uncertainties for the parameters.
-        """
-        # Determine if single or double peak based on presence of LPEAKB
-        self.ncomp = 2 if 'LPEAKB' in paramdict.keys() else 1
-        # Determine baseline type based on presence of SLOPE or TAU
-        self.baseline = 'lin' if 'SLOPE' in paramdict.keys() else 'const'
-        self.baseline = 'damp' if 'TAU' in paramdict.keys() else self.baseline
-
-        # Make per-instance copies of param order and bounds to avoid shared mutation
-        self.lya_param_order = {
-            1: list(self.__class__.lya_param_order_default[1]),
-            2: list(self.__class__.lya_param_order_default[2])
-        }
-        self.lya_bounds = {
-            1: [list(self.__class__.lya_bounds_default[1][0]), list(self.__class__.lya_bounds_default[1][1])],
-            2: [list(self.__class__.lya_bounds_default[2][0]), list(self.__class__.lya_bounds_default[2][1])]
-        }
-
-        # Extend the lya_param_order and lya_bounds if needed
-        if self.baseline == 'lin':
-            self.lya_param_order[self.ncomp].extend(['SLOPE'])
-            self.lya_bounds[self.ncomp][0].append(-np.inf)
-            self.lya_bounds[self.ncomp][1].append(np.inf)
-        elif self.baseline == 'damp':
-            self.lya_param_order[self.ncomp].extend(['TAU', 'FWHM', 'LPEAK_ABS'])
-            self.lya_bounds[self.ncomp][0].extend([0   , -10, 1215.67 - 2.5])
-            self.lya_bounds[self.ncomp][1].extend([1000,  20, 1215.67 + 2.5])
-
-        # Populate parameter and uncertainty dictionaries with only relevant parameters
-        self.param_dict = {k: paramdict[k] for k in self.lya_param_order[self.ncomp]}
-        self.err_dict   = {k: uncertainties[k] for k in self.lya_param_order[self.ncomp]}
-        # Select appropriate model function
-        if self.baseline == 'lin':
-            self.func = mdl.lya_speak_lin if self.ncomp == 1 else mdl.lya_dpeak_lin
-        elif self.baseline == 'damp':
-            self.func = mdl.lya_speak_damp if self.ncomp == 1 else mdl.lya_dpeak_damp
-        elif self.baseline == 'const':
-            self.func = mdl.lya_speak if self.ncomp == 1 else mdl.lya_dpeak
-        else:
-            raise ValueError(f"Unknown baseline type: {self.baseline}")
-
-        # Compute advanced parameters and errors immediately
-        # Use Complex for error propagation if uncertainties are provided
-        try:
-            popt = [self.param_dict[k] for k in self.param_dict.keys()]
-            perr = [self.err_dict[k] for k in self.err_dict.keys()]
-            complex_pars = [Complex(val, err) for val, err in zip(popt, perr)]
-            complex_dict = {k: v for k, v in zip(self.param_dict.keys(), complex_pars)}
-            advpars = self.get_adv_params(complex_dict)
-            self.adv_params = {k: v.value for k, v in advpars.items()}
-            self.adv_errors = {k: v.error for k, v in advpars.items()}
-        except Exception:
-            self.adv_params = {}
-            self.adv_errors = {}
-    
-    def get_adv_params(self, param_dict):
-        """Calculate advanced parameters such as FWHM and integrated fluxes from the fit parameters.
-        Returns a dictionary of advanced parameters.
-        """
-        advdict = {} # Dictionary to hold advanced parameters
-
-        # Calculate FWHM
-        if self.ncomp == 2:
-            advdict['FWHMB'] = 2 * np.sqrt(2 * np.log(2)) * param_dict['DISPB'] / (1. - 2 * np.log(2) * param_dict['ASYMB'] ** 2.)
-        advdict['FWHMR'] = 2 * np.sqrt(2 * np.log(2)) * param_dict['DISPR'] / (1. - 2 * np.log(2) * param_dict['ASYMR'] ** 2.)
-        
-        # Calculate integrated fluxes over a minimum intrinsic range (4 Angstroms rest-frame)
-        intrange_rest = 4.0
-        intrange = intrange_rest * (1. + self.param_dict['LPEAKR'] / 1215.67) # Observed frame
-        if self.ncomp == 2: # Integrate blue component if present
-            asymfrac = np.abs(mdl.lya_swhm(param_dict['DISPB'], param_dict['ASYMB'], -1) \
-                              / mdl.lya_swhm(param_dict['DISPB'], param_dict['ASYMB'], +1))
-            intstart = param_dict['LPEAKB'] - asymfrac * intrange / (1. + asymfrac)
-            intend = param_dict['LPEAKB'] + intrange / (1. + asymfrac)
-            xaxis = np.arange(intstart, intend, 0.125)
-            modfuncb = mdl.lya_speak(
-                xaxis, 
-                param_dict['AMPB'], 
-                param_dict['LPEAKB'], 
-                param_dict['DISPB'], 
-                param_dict['ASYMB'], 
-                0.
-            )
-            posmask = modfuncb > 0.
-            advdict['FLUXB'] = np.trapz(modfuncb[posmask], x = xaxis[posmask])
-        asymfrac = np.abs(mdl.lya_swhm(param_dict['DISPR'], param_dict['ASYMR'], -1) \
-                          / mdl.lya_swhm(param_dict['DISPR'], param_dict['ASYMR'], +1))
-        intstart = param_dict['LPEAKR'] - asymfrac * intrange / (1. + asymfrac)
-        intend = param_dict['LPEAKR'] + intrange / (1. + asymfrac)
-        xaxis = np.arange(intstart, intend, 0.125)
-        modfuncr = mdl.lya_speak(
-            xaxis, 
-            param_dict['AMPR'], 
-            param_dict['LPEAKR'], 
-            param_dict['DISPR'], 
-            param_dict['ASYMR'], 
-            0.
-        )
-        posmask = modfuncr > 0.
-        advdict['FLUXR'] = np.trapz(modfuncr[posmask], x = xaxis[posmask])
-        return advdict
-    
-    def fit_to(self, x, y, yerr, mask = None, bounds = None, use_bootstrap = False,
-               bootstrap_params: Optional[BootstrapParams] = None):
-        """Fit the Lyman-alpha profile to the provided data. Returns dictionaries of fit results and uncertainties."""
-        if mask is None:
-            mask = np.ones(np.size(y))
-        if bounds is None:
-            bounds = self.lya_bounds[self.ncomp]
-
-        popt, perrs = None, None
-        advpars = None
-        reduced_chisq = None
-
-        # Use fit_mc for bootstrapping, passing only user-provided params
-        if use_bootstrap:
-            fit_mc_kwargs = {
-                'f': self.func,
-                'x': x[mask],
-                'y': y[mask],
-                'yerr': yerr[mask],
-                'p0': list(self.param_dict.values()),
-                'bounds': bounds,
-                'return_sample': True
-            }
-            if bootstrap_params:
-                fit_mc_kwargs.update(bootstrap_params)
-
-            fitres = fit_mc(**fit_mc_kwargs)
-
-            if fitres is None:
-                print("Fitting failed.")
-                return None, None, None, None
-            fitted_params, distributions = fitres
-            popt = np.array(fitted_params[0])
-            perrs = np.array(fitted_params[1])
-            
-            # Make a dictionary to pass to get_adv_params (does not need to be Complex here)
-            param_dicts = []
-            for pset in distributions:
-                param_dicts.append({k: v for k, v in zip(self.param_dict.keys(), pset)})
-            
-            # Calculate advanced parameters for each distribution and then get median and errors
-            advparams_distr = [self.get_adv_params(p) for p in param_dicts]
-            adv_params = {}
-            adv_errors = {}
-            for key in advparams_distr[0].keys():
-                vals = np.array([d[key] for d in advparams_distr])
-                med, err = avgfunc(vals, bootstrap_params.get('errfunc', 'mad') if bootstrap_params else 'mad')
-                adv_params[key] = med
-                adv_errors[key] = err
-
-            # Calculate reduced chi-squared of the best fit
-            residuals = y[mask] - self.func(x[mask], *popt)
-            reduced_chisq = np.nansum((residuals / yerr[mask])**2) / (np.sum(mask) - len(popt))
-        else:
-            max_retries = 3
-            success = False
-            popt, pcov = None, None
-            for attempt in range(max_retries):
-                try:
-                    popt, pcov = curve_fit(
-                        self.func, x[mask], y[mask], sigma=yerr[mask], absolute_sigma=True,
-                        p0=list(self.param_dict.values()), method='trf', max_nfev=100000, bounds=bounds
-                    )
-                    success = True
-                    break
-                except (RuntimeError, ValueError) as e:
-                    print(f"curve_fit attempt {attempt+1} failed: {e}")
-            if not success:
-                print("All curve_fit attempts failed.")
-                return None, None, None, None
-            perrs = np.sqrt(np.diag(pcov))
-            complex_pars = [Complex(val, err) for val, err in zip(popt, perrs)]
-            advpars = self.get_adv_params(complex_pars)
-            adv_params = {k: v.value for k, v in advpars.items()}
-            adv_errors = {k: v.error for k, v in advpars.items()}
-            residuals = y[mask] - self.func(x[mask], *popt)
-            reduced_chisq = np.nansum((residuals / yerr[mask])**2) / (np.sum(mask) - len(popt))
-
-        # Prepare output dictionaries
-        fit_params = {k: v for k, v in zip(self.param_dict.keys(), popt)} if popt is not None else {}
-        fit_errors = {k: v for k, v in zip(self.param_dict.keys(), perrs)} if perrs is not None else {}
-        # Merge advanced params
-        fit_params.update(adv_params)
-        fit_errors.update(adv_errors)
-
-        # Update instance attributes to reflect latest fit
-        self.adv_params = adv_params
-        self.adv_errors = adv_errors
-
-        return fit_params, fit_errors, self.func, reduced_chisq
-    
-
-def fit_lya_complete(wave, spec, spec_err, row, width=50, plot_result = True,
-                   mc_niter=500, rchsq_thresh=2.0, save_plots = False, plot_dir = './'):
-    """Fit the Lyman alpha line based on prior fitting results (if present). Here,
-    we compare single and double-peaked fits and return the best one based on reduced chi-squared.
-    Baselines are handled in increasing order of complexity (const, lin, damp).
-    Returns a dictionary of optimal parameters and their associated uncertainties.
-    wave: wavelength array
-    spec: flux density array
-    spec_err: flux density error array
-    row: the row of the megatab containing the fitting results to use as priors
-    width: the width (in Angstroms) around the Lya peak to use for fitting
-    plot_result: whether to plot the fitting result
-    """
-    # First use a constant baseline with the refit_lya_line function
-    fit_const = refit_lya_line(wave, spec, spec_err, row, width=width, baseline='const',
-                               plot_result=plot_result, mc_niter=mc_niter, save_plots=save_plots, plot_dir=plot_dir)
-    
-    # Check the reduced chi-squared of the fit -- if it's good enough, return it
-    if fit_const and fit_const[3] < rchsq_thresh:
-        print("Constant baseline fit is good enough; returning result.")
-        return fit_const
-    
-    # If not, try a linear baseline
-    print("Trying linear baseline fit...")
-    fit_lin = refit_lya_line(wave, spec, spec_err, row, width=width, baseline='lin',
-                             plot_result=plot_result, mc_niter=mc_niter, save_plots=save_plots, plot_dir=plot_dir)
-
-    if fit_lin and fit_lin[3] < rchsq_thresh:
-        print("Linear baseline fit is good enough; returning result.")
-        return fit_lin
-    
-    # If still not good enough, try a damped Lyman alpha baseline
-    print("Trying damped Lyman alpha baseline fit...")
-    fit_damp = refit_lya_line(wave, spec, spec_err, row, width=width, baseline='damp',
-                              plot_result=plot_result, mc_niter=mc_niter, save_plots=save_plots, plot_dir=plot_dir)
-
-    if fit_damp and fit_damp[3] < rchsq_thresh:
-        print("Damped Lyman alpha baseline fit is good enough; returning result.")
-        return fit_damp
-    
-    # If none of the fits were good enough, return the one with the lowest reduced chi-squared
-    # note that {}, {}, None, None are possible return values if fitting failed
-    fits = [fit_const, fit_lin, fit_damp]
-    best_fit = min(fits, key=lambda x: x[3] if x[3] else np.inf)
-    # Get the fit type for reporting -- bearing in mind that the length of fits may vary
-    best_fit_type = ['const', 'lin', 'damp'][fits.index(best_fit)] if best_fit in fits else 'unknown'
-    print(f"Returning best fit ({best_fit_type}) with reduced chi-squared = {best_fit[3]:.2f}")
-    return best_fit
-
-
-def get_reduced_chisq(y, ymodel, yerr, nparams):
-    """Calculate the reduced chi-squared statistic."""
-    residuals = y - ymodel
-    chisq = np.nansum((residuals / yerr) ** 2)
-    dof = len(y) - nparams
-    if dof <= 0:
-        return np.inf
-    return chisq / dof
-    
-
-def refit_lya_line(wave, spec, spec_err, row, width=50, baseline = 'const', plot_result = True,
-                   mc_niter=1000, save_plots = False, plot_dir = './'):
-    """Refit the Lyman alpha line based on prior fitting results. Always fit a single and
-    double peaked profile in parallel and then return the best one based on reduced chi-squared.
-    Returns a dictionary of optimal parameters and their associated uncertainties.
-    wave: wavelength array
-    spec: flux density array
-    spec_err: flux density error array
-    row: the row of the megatab containing the fitting results to use as priors
-    width: the width (in Angstroms) around the Lya peak to use for fitting
-    baseline: type of baseline to use ('const', 'lin', or 'damp')
-    plot_result: whether to plot the fitting result
-    """
-    # Get the wavelength of the red Lya peak from the table
-    lya_peak = row['LPEAKR']
-    
-    # First try a double-peaked fit
-    print(f"Refitting {row['CLUSTER']} {row['iden']}...")
-    
-    # Initial guesses from the table, or semi-generic if not available
-    amp_r_init = row['AMPR']
-    cen_r_init = row['LPEAKR']
-    wid_r_init = row['DISPR']
-    asy_r_init = row['ASYMR']
-    amp_b_init = row['AMPB'] if not np.isnan(row['AMPB']) else 0.1 * row['AMPR']
-    cen_b_init = row['LPEAKB'] if not np.isnan(row['LPEAKB']) else row['LPEAKR'] - 5.0
-    wid_b_init = row['DISPB'] if not np.isnan(row['DISPB']) else row['DISPR']
-    asy_b_init = -1 * row['ASYMR']
-    cont_init  = [row['CONT'] if not np.isnan(row['CONT']) else 0.0] # This needs to be a list for appending later
-
-    # Make a list of parameter names for reference in the order used by the model
-    param_names = ['AMPB', 'LPEAKB', 'DISPB', 'ASYMB',
-                   'AMPR', 'LPEAKR', 'DISPR', 'ASYMR',
-                   'CONT']
-    
-    # Append baseline parameters if needed
-    if baseline == 'lin':
-        slope_init = row['SLOPE'] if not np.isnan(row['SLOPE']) else 0
-        param_names.append('SLOPE')
-        cont_init = [*cont_init, slope_init]
-        cont_lower = (-50, -np.inf)
-        cont_upper = (2000, np.inf)
-    elif baseline == 'damp':
-        # Get redshift to adjust initial guess for fwhm as needed
-        z_init = row['Z'] if not np.isnan(row['Z']) else cen_r_init / 1215.67 - 1
-        tau_init = row['TAU'] if not np.isnan(row['TAU']) else 20.0
-        # Initial guess for fwhm is 150km/s in rest frame, which we convert to observed frame wavelength
-        fwhm_init = (150 / c) * 1215.67 * (1 + z_init)
-        # If there is a value in the table, use it instead
-        fwhm_init = row['FWHM'] if not np.isnan(row['FWHM']) else fwhm_init
-        # Initial guess for LPEAK_ABS is 2.5 Angstroms blueward of the red peak
-        lpeak_abs_init = row['LPEAK_ABS'] if not np.isnan(row['LPEAK_ABS']) else cen_r_init - 2.5
-        param_names.extend(['TAU', 'FWHM', 'LPEAK_ABS'])
-        cont_init = [*cont_init, tau_init, fwhm_init, lpeak_abs_init]
-        # Impose bounds of fwhm > 1.25 Angstroms observed frame and less than 500km/s
-        cont_lower = (-50 , 10, (100 / c) * 1215.67 * (1 + z_init), lpeak_abs_init - 10)
-        cont_upper = (2000, 100, (500 / c) * 1215.67 * (1 + z_init), lpeak_abs_init + 10)
-    else:
-        cont_lower = (-50,)
-        cont_upper = (2000,)
-
-    # Define initial parameters for the double-peaked model
-    p0 = [amp_b_init, cen_b_init, wid_b_init, asy_b_init,
-            amp_r_init, cen_r_init, wid_r_init, asy_r_init,
-            *cont_init]  # baseline
-    
-    # Define bounds for the parameters
-    bounds = (
-        [0, cen_b_init - 15, 0.625, -0.5, 
-         0, cen_r_init - 5,  0.625, -0.5, 
-         *cont_lower],  # lower bounds
-        [10000, cen_b_init + 10, 6, 0.1, 
-         10000, cen_r_init + 10, 6, 0.5, 
-         *cont_upper]   # upper bounds
-    )
-
-    # Figure out which function to use based on baseline type
-    mdl_func = mdl.lya_dpeak_lin if baseline == 'lin' else \
-               mdl.lya_dpeak_damp if baseline == 'damp' else \
-               mdl.lya_dpeak
-
-    # Get mask for sky lines and bad values
-    fitmask = generate_spec_mask(wave, spec, spec_err,
-                                 lya_peak, width, 'LYALPHA')
-    
-    # Make sure there are enough good points to fit
-    if fitmask.sum() < 10:
-        print(f"Not enough good points to fit Lya for {row['CLUSTER']} {row['iden']}.")
-        return {}, {}, None, None
-
-    best_popt, popt_double, popt_single = None, None, None
-    best_perr, perr_double, perr_single = None, None, None
-    best_rchsq, rchsq_double, rchsq_single = np.inf, np.inf, np.inf
-    best_param_names = None
-
-    # First fit the double-peaked model, trying multiple initial guesses for the blue peak
-    for shift in [0, -5, 5, -10, 10]: # Perform five initial fits, moving the blue peak initial guess each time
-        p0[1] = cen_b_init + shift
-        
-        # Make sure the initial guesses are always within bounds
-        p0, bounds = check_inputs(p0, bounds)
-        try:
-            popt, pcov = curve_fit(mdl_func, wave[fitmask], spec[fitmask],
-                                   p0=p0, sigma=spec_err[fitmask],
-                                   bounds=bounds, absolute_sigma=True,
-                                   max_nfev = 100000, method = 'trf')
-            perr = np.sqrt(np.diag(pcov))
-            if spectro.is_reasonable_dpeak(popt, perr):
-                popt_double  = popt
-                perr_double  = perr
-                rchsq_double = get_reduced_chisq(spec[fitmask], 
-                                               mdl_func(wave[fitmask], *popt), 
-                                               spec_err[fitmask], 
-                                               len(popt))
-                break  # Exit the loop if a good fit is found
-        except (RuntimeError, ValueError) as e:
-            print(f"Fit attempt with blue peak shift {shift} failed: {e}")
-            continue
-    # if best_popt is not None and best_perr is not None:
-    #     print(f"Double-peaked fit successful for {row['CLUSTER']} {row['iden']}.")
-    #     # If the fit was successful, populate the parameter dictionary
-    #     param_dict = dict(zip(param_names, best_popt))
-    #     error_dict = dict(zip(param_names, best_perr))
-    if popt_double is None or perr_double is None:
-        print(f"No reasonable double-peaked fit found for {row['CLUSTER']} {row['iden']}.")
-        print("Moving to single-peaked fit...")
-
-    # Now perform a single-peaked fit (with multiple attempts in case of failure)
-    p0_single = [amp_r_init, cen_r_init, wid_r_init, asy_r_init, *cont_init]  # baseline
-    bounds_single = (
-        [0,     cen_r_init - 5, 1.25, -0.5,  *cont_lower],  # lower bounds
-        [10000, cen_r_init + 5, 50,    0.5,  *cont_upper]   # upper bounds
-    )
-    mdl_func_single = mdl.lya_speak_lin if baseline == 'lin' else \
-                mdl.lya_speak_damp if baseline == 'damp' else \
-                mdl.lya_speak
-    # Ensure initial guesses are within bounds
-    p0_single, bounds_single = check_inputs(p0_single, bounds_single)
-
-    for _ in range(3): # Try up to three times
-        try:
-            popt, pcov = curve_fit(mdl_func_single, wave[fitmask], spec[fitmask],
-                                    p0=p0_single, sigma=spec_err[fitmask],
-                                    bounds=bounds_single, absolute_sigma=True,
-                                    max_nfev = 100000, method = 'trf')
-            popt_single  = popt
-            perr_single = np.sqrt(np.diag(pcov))
-            rchsq_single = get_reduced_chisq(spec[fitmask], 
-                                            mdl_func_single(wave[fitmask], *popt), 
-                                            spec_err[fitmask], 
-                                            len(popt))
-
-            print(f"Single-peaked fit successful for {row['CLUSTER']} {row['iden']}.")
-
-            break  # Exit the loop if fit was successful
-
-        except (RuntimeError, ValueError) as e:
-            print(f"Single-peaked fit also failed for {row['CLUSTER']} {row['iden']}: {e}")
-        
-    # Now compare the single and double peaked fits if both were successful
-    if popt_double is not None and perr_double is not None and popt_single is not None and perr_single is not None:
-        if rchsq_double < rchsq_single:
-            print(f"Double-peaked fit is better (reduced chi-squared = {rchsq_double:.2f}) than single-peaked fit ({rchsq_single:.2f}).")
-            best_popt = popt_double
-            best_perr = perr_double
-            best_rchsq = rchsq_double
-            best_param_names = param_names  # Use full parameter names
-            best_bounds = bounds
-        else:
-            print(f"Single-peaked fit is better (reduced chi-squared = {rchsq_single:.2f}) than double-peaked fit ({rchsq_double:.2f}).")
-            best_popt = popt_single
-            best_perr = perr_single
-            best_rchsq = rchsq_single
-            # Exclude blue peak parameters from the names
-            best_param_names = [n for n in param_names if n[-1] != 'B']
-            best_bounds = bounds_single
-    elif popt_double is not None and perr_double is not None:
-        best_popt = popt_double
-        best_perr = perr_double
-        best_rchsq = rchsq_double
-        best_param_names = param_names  # Use full parameter names
-        best_bounds = bounds
-    elif popt_single is not None and perr_single is not None:
-        best_popt = popt_single
-        best_perr = perr_single
-        best_rchsq = rchsq_single
-        best_param_names = [n for n in param_names if n[-1] != 'B']
-        best_bounds = bounds_single
-    else:
-        print(f"Both single and double-peaked fits failed for {row['CLUSTER']} {row['iden']}.")
-        return {}, {}, None, None
-    
-    # If we got here, we have a best fit. Populate the parameter dictionary
-    param_dict = dict(zip(best_param_names, best_popt))
-    error_dict = dict(zip(best_param_names, best_perr))
-
-    # Now get the final parameters and errors using bootstrapping
-    # Using the LyaProfile class which is in this module
-    initial_profile = LyaProfile(param_dict, error_dict)
-    # Now use the class method to generate uncertainties
-    final_params, final_errors, \
-        final_function, final_reduced_chisq \
-            = initial_profile.fit_to(wave, spec, spec_err, mask=fitmask,
-                                     bounds=best_bounds, use_bootstrap=True,
-                                     bootstrap_params={
-                                         'niter':           mc_niter,
-                                         'autocorrelation': False,
-                                         'max_nfev':        2000
-                                     })
-    
-    # Catch cases where the fit failed
-    if final_params is None or final_errors is None:
-        print(f"Final fitting with bootstrapping failed for {row['CLUSTER']} {row['iden']}.")
-        return {}, {}, None, None
-
-    # Add dummy values for the blue peak parameters if needed
-    if 'AMPB' not in final_params.keys():
-        for pname in param_names[:4]:
-            final_params[pname] = np.nan
-            final_errors[pname] = np.nan
-
-    # Dictionary of full baseline names for plotting
-    basenames = {
-        'const': 'Constant',
-        'lin': 'Linear',
-        'damp': 'Absorption'
-    }
-
-    if plot_result and final_function is not None:
-        # Plot the fit result, decomposed into lyman alpha and baseline components
-        # Make a fine wavelength grid for plotting the model
-        finegrid = np.linspace(wave[fitmask].min(), wave[fitmask].max(), 1000)
-        # Total model
-        final_model = final_function(finegrid, *best_popt)
-        # Emission model only (extract the emission parameters, then use either single or double peak function)
-        # Appending zero to the end for the continuum level
-        emission_popt = best_popt.copy()[:-len(cont_init)]
-        rpeak_popt = emission_popt[:4]
-        bpeak_model = 0
-        if len(emission_popt) == 8: # double peaked
-            rpeak_popt = emission_popt[4:8]
-            bpeak_popt = emission_popt[:4]
-            bpeak_model = mdl.lya_speak(finegrid, *bpeak_popt, 0.0) # Append zero for continuum
-        rpeak_model = mdl.lya_speak(finegrid, *rpeak_popt, 0.0) # Append zero for continuum
-        # Baseline only -- just subtract the emission model from the total
-        baseline_model = final_model - rpeak_model - bpeak_model
-
-        # Now plot
-        plt.figure(figsize=(6,3), facecolor='white')
-        # Data with error bars
-        plt.step(wave[fitmask], spec[fitmask], where='mid', color='black', alpha=0.75, label='Data')
-        plt.fill_between(wave[fitmask], spec[fitmask] - spec_err[fitmask], spec[fitmask] + spec_err[fitmask],
-                         color='gray', step='mid', alpha=0.3, label='Error')
-        # Model components
-        # Total model
-        plt.plot(finegrid, final_function(finegrid, *best_popt),
-                 color='fuchsia', label='Best Fit')
-        # Emission only
-        plt.plot(finegrid, rpeak_model,
-                 color='red', linestyle='--', label='Red Peak')
-        if len(emission_popt) == 8: # double peaked
-            plt.plot(finegrid, bpeak_model,
-                     color='royalblue', linestyle='--', label='Blue Peak')
-        # Baseline only
-        plt.plot(finegrid, baseline_model,
-                 color='tab:green', linestyle=':', label=f'{basenames[baseline]} Baseline')
-        plt.xlim(lya_peak - 50, lya_peak + 50)
-        plt.xlabel('Wavelength [\AA]')
-        plt.ylabel('Flux Density [$10^{-20}$\,erg\,s$^{-1}$\,cm$^{-2}$\,\AA$^{-1}$]')
-        plt.title(f"{row['CLUSTER']} {row['iden']} "+r"Lyman-$\alpha$ Fit")
-        plt.legend()
-        if save_plots:
-            plt.savefig(f"{plot_dir}/{row['CLUSTER']}_{row['iden']}_lya_fit.png", dpi=300)
-        plt.show()
-
-    return final_params, final_errors, initial_profile, final_reduced_chisq
-
-
-def refit_other_line(wave, spec, spec_err, row, line_tab_row, width=25, ax_in=None):
+def refit_other_line(wave, spec, spec_err, row, line_tab_row = None, width=25, ax_in=None,
+                     line_name = None, bootstrap_params: Optional[BootstrapParams] = None):
     """Refit a non-Lyman alpha emission line based on prior fitting results.
     Uses a single Gaussian plus linear baseline model with initial guesses from the table row.
     In cases where no significant fit was previously found, gets initial guesses from the R21 catalogue.
@@ -1131,13 +561,20 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row, width=25, ax_in=No
     spec:         flux density array
     spec_err:     flux density error array
     row:          the row of the megatab containing the fitting results to use as priors
-    line_tab_row: the row of the line table containing information about the line to fit
+    line_tab_row: the row of the line table containing information about the line to fit from the 
+                  original catalogues. Only needs to be supplied if no significant fit was found previously.
     width:        the width (in Angstroms) around the line to use for fitting
+    bootstrap_params: optional dictionary of parameters for Monte Carlo error estimation
+                      (niter, errfunc, chisq_thresh, sig_clip, autocorrelation, max_lag, 
+                       baseline_order, max_nfev). If None, uses standard curve_fit errors.
     """
-    line_name = line_tab_row['LINE']
+    if line_tab_row is None and line_name is None:
+        raise ValueError("Either line_tab_row or line_name must be provided.")
+    if line_tab_row is not None:
+        line_name = line_tab_row['LINE']
 
     # Was a significant fit found previously?
-    significant_fit = row['SNR_'+line_name] > 3.0
+    significant_fit = np.abs(row['SNR_'+line_name]) > 3.0
 
     # Is the line in a doublet?
     doublet = np.any(const.flines == line_name) or np.any(const.slines == line_name)
@@ -1159,7 +596,12 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row, width=25, ax_in=No
 
     # Calculate observed wavelength, multiplying by the ratio of the primary line rest wavelength to this line's rest wavelength
     # (this value will be 1.0 if this is the primary line)
-    r21_observed_wavelength = line_tab_row['LBDA_OBS'] * const.wavedict[primary_line] / const.wavedict[line_name]
+    if line_tab_row is None:
+        r21_observed_wavelength = row[f'LPEAK_{primary_line}']
+        r21_observed_flux      = row[f'FLUX_{primary_line}']
+    else:
+        r21_observed_wavelength = line_tab_row['LBDA_OBS'] * const.wavedict[primary_line] / const.wavedict[line_name]
+        r21_observed_flux      = line_tab_row['FLUX']
 
     print(f"Refitting {primary_line} at {r21_observed_wavelength:.2f} Angstroms for {row['CLUSTER']} {row['iden']}...")
     
@@ -1167,7 +609,7 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row, width=25, ax_in=No
     param_names = ['FLUX', 'LPEAK', 'FWHM']
     
     # Initial guesses from the table, or the R21 catalogue if not available
-    flux_init = row[f'FLUX_{primary_line}'] if significant_fit else line_tab_row['FLUX']
+    flux_init = row[f'FLUX_{primary_line}'] if significant_fit else r21_observed_flux
     cen_init  = row[f'LPEAK_{primary_line}'] if significant_fit else r21_observed_wavelength
     wid_init  = row[f'FWHM_{primary_line}'] if significant_fit else 3.0 # just use a generic value here
     # Put these into p0
@@ -1205,7 +647,8 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row, width=25, ax_in=No
         elif value > bounds_dict[param][1]:
             initial_guesses[param] = bounds_dict[param][1] * 0.9 # If the initial guess is greater than the bounds, replace with this
     fit = fit_line(wave, spec, spec_err, primary_line, initial_guesses, bounds=bounds_dict,
-                         continuum_buffer=width, plot_result=True, ax_in=ax_in)
+                   continuum_buffer=width, plot_result=True, ax_in=ax_in,
+                   bootstrap_params=bootstrap_params)
     
     if 'param_dict' not in fit:
         print(f"Fit failed for {primary_line} in {row['CLUSTER']} {row['iden']}.")
