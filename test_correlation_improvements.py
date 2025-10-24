@@ -25,7 +25,7 @@ for true_tau in [2.0, 5.0, 10.0]:
     
     # Estimate correlation length
     wave = np.arange(n_points)
-    estimated_tau = autocorr_length(wave, noise, max_lag=int(3 * true_tau))
+    estimated_tau, inflation_factor = autocorr_length(wave, noise, yerr, max_lag=int(3 * true_tau))
     
     print(f"Estimated τ = {estimated_tau:.2f}")
     print(f"Relative error: {100 * (estimated_tau - true_tau) / true_tau:.1f}%")

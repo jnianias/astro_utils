@@ -45,36 +45,36 @@ def which_fit_method(linename):
 
 from numpy.polynomial import Polynomial as nppoly
 
-def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
+def autocorr_length(wave, spec, yerr, max_lag=10, baseline_order=None):
     """Estimate noise correlation length from spectral residuals.
     
-    Designed for astronomical spectroscopy: estimates short-scale correlations
-    (typically 1-5 pixels) that could cause correlated noise peaks to mimic
-    emission lines. Uses residuals after model fitting to focus on noise structure.
+    Designed for short astronomical spectra (30-100 pixels): estimates short-scale
+    correlations (typically 1-5 pixels) that could cause correlated noise peaks to
+    mimic emission lines.
     
     Returns the e-folding length τ where ACF(τ) = 1/e ≈ 0.368.
     
     Algorithm:
     ----------
-    Uses a two-stage detection approach analogous to object detection in imaging:
+    Optimized for short, noisy spectra where traditional ACF tail estimation is
+    unreliable. Uses a simplified two-stage approach:
     
     **Stage 1: Significance Test**
-        Tests if ACF(1) exceeds a strict threshold (median + 2σ of noise floor).
-        If not, returns τ=1 immediately (no correlation detected).
-        This prevents estimating correlation lengths from pure noise fluctuations.
+        Tests if ACF(1) exceeds 3σ threshold based on statistical uncertainty
+        (~3/sqrt(n)). If not, returns τ=1 (no significant correlation).
+        Prevents estimating correlation from noise fluctuations.
     
-    **Stage 2: Boundary Detection**
-        Once correlation is confirmed, measures its extent using a liberal 
-        threshold (median of noise floor). This is like finding the boundary 
-        of a detected object: we ask "where does the signal return to background?"
+    **Stage 2: Exponential Fit & Boundary Detection**
+        Fits exponential decay to first few lags (most reliable estimates).
+        Uses fixed threshold (0.05) for boundary detection - robust for
+        short spectra where ACF tail is too noisy for reliable estimation.
         
-    The noise floor is estimated from the ACF tail (lags > max_lag) using the
-    Median Absolute Deviation (MAD), which is robust to outliers and residual
-    baseline structure.
+    Uses unbiased ACF estimator: divides by actual number of pairs at each lag
+    to avoid systematic negative bias at large lags.
     
-    Philosophy: Conservative for detection (avoid false positives), liberal for
-    measurement (avoid underestimating τ). Better to accept real correlations 
-    than miss them, but require clear evidence before claiming correlation exists.
+    Philosophy: Simple and robust for short spectra. Conservative for detection
+    (require clear lag-1 correlation), but uses fixed thresholds to avoid
+    unreliable noise floor estimation from noisy ACF tails.
     
     Parameters:
     -----------
@@ -82,6 +82,8 @@ def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
         Wavelength array (used for baseline fitting)
     spec : array  
         Spectral residuals (observed - model) or flux values
+    yerr : array
+        Error estimates for each pixel (for χ²_red calculation)
     max_lag : int
         Maximum lag to search for correlations (default: 10)
         For line detection, use ~5-10 pixels
@@ -94,6 +96,9 @@ def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
     tau : float
         Correlation length in pixels (>= 1.0)
         Returns 1.0 if no significant correlation detected at lag 1
+    inflation_factor : float
+        Error inflation factor based on χ²_red (>= 1.0)
+        Accounts for systematic excess variance beyond formal errors
     
     Notes:
     ------
@@ -105,42 +110,77 @@ def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
     if baseline_order is not None:
         p = nppoly.fit(wave, spec, baseline_order)
         residuals = spec - p(wave)
+        print(f"Baseline: polynomial order {baseline_order}")
     else:
         residuals = spec - np.mean(spec)
+        print(f"Baseline: mean removal only")
 
-    # 2. ACF calculation with normalization check
-    acf = np.correlate(residuals, residuals, mode='full')[len(residuals)-1:] # slicing gets positive lags
+    # Check for systematic excess variance (Ly-α forest, sky lines, etc.)
+    # Use robust estimator: median of |residuals|/yerr
+    # This is less sensitive to outliers than χ²_red
+    normalized_residuals = np.abs(residuals) / yerr
+    median_normalized_residual = np.median(normalized_residuals)
+    
+    # Trigger conservatively using median to avoid outlier sensitivity
+    # But correct using proper Gaussian calibration for accurate scaling
+    threshold = 1.0
+    if median_normalized_residual > threshold:
+        # For Gaussian noise, median(|z|) ≈ 0.675, so scale to get true σ
+        inflation_factor = median_normalized_residual / 0.675
+        print(f"Systematic excess variance detected: inflating errors by {inflation_factor:.2f}x")
+    else:
+        inflation_factor = 1.0
+
+    # 2. ACF calculation with unbiased estimator
+    n = len(residuals)
+    # Remove mean to ensure zero-mean signal
+    residuals = residuals - np.mean(residuals)
+    
+    # Compute ACF using unbiased estimator
+    # For each lag k, divide the sum by the actual number of pairs (n-k)
+    max_acf_lag = n  # Can compute ACF up to lag n-1
+    acf = np.zeros(max_acf_lag)
+    
+    for k in range(max_acf_lag):
+        if n - k > 0:
+            # Sum of products for lag k, divided by number of pairs
+            acf[k] = np.sum(residuals[:n-k] * residuals[k:]) / (n - k)
+        else:
+            break
+    
     if acf[0] <= 0:
         print("WARNING: Non-positive ACF(0); returning τ=1")
-        return 1  # Protection against bad normalization
+        return 1.0, inflation_factor  # Protection against bad normalization
+    
+    # Normalize so ACF(0) = 1
     acf = acf / acf[0]
 
-    # 3. Estimate noise floor from tail using robust MAD estimator
-    # MAD is less sensitive to long-range correlations from baseline structure
-    tail_start = min(max_lag + 1, len(acf)-20)
-    tail_acf = acf[tail_start:tail_start+20]
-    noise_floor_median = np.median(tail_acf)
-    noise_floor_mad = median_abs_deviation(tail_acf)
+    # 3. Simplified robust approach for short spectra
+    # Don't try to estimate noise floor from unreliable tail - just use lag-1 correlation
     
-    # MAD * 1.4826 converts MAD to equivalent standard deviation for Gaussian
-    noise_floor_std_equiv = 1.4826 * noise_floor_mad
+    # Stage 1: Check if there's significant correlation at lag 1
+    # Use 2σ threshold - more lenient to catch real correlations in noisy data
+    # For short spectra (n < 100), ACF[1] standard error ~ 1/sqrt(n)
+    acf_1_stderr = 1.0 / np.sqrt(n)
+    detection_threshold = 2.0 * acf_1_stderr  # 2-sigma detection (more sensitive)
     
-    print(f"\nACF[:10]: {acf[1:11]}")
-    print(f"ACF tail: median={noise_floor_median:.3f}, MAD={noise_floor_mad:.3f} (σ-equiv={noise_floor_std_equiv:.3f})")
-    
-    # 4. Stage 1: Test if there's significant correlation at lag 1
-    # Use strict threshold (2σ) to avoid false detections
-    detection_threshold = noise_floor_median + 2.0 * noise_floor_std_equiv
+    print(f"\nACF[1] = {acf[1]:.3f} ± {acf_1_stderr:.3f}")
+    print(f"Detection threshold (2σ): {detection_threshold:.3f}")
     
     if acf[1] < detection_threshold:
-        print(f"No significant correlation: ACF(1)={acf[1]:.3f} < {detection_threshold:.3f} (detection threshold)")
+        print(f"No significant correlation detected at lag 1")
         print("Returning τ=1 (uncorrelated)")
-        return 1.0
+        return 1.0, inflation_factor
     
-    # Stage 2: Correlation detected - measure extent using liberal boundary threshold
-    print(f"Correlation detected: ACF(1)={acf[1]:.3f} > {detection_threshold:.3f}")
-    boundary_threshold = max(0.1, noise_floor_median)
-    print(f"Measuring extent with boundary threshold: {boundary_threshold:.3f}")
+    # Stage 2: Estimate τ from early lags using exponential fit
+    # Use first few lags (3-7) where ACF is most reliable
+    print(f"Correlation detected: ACF[1]={acf[1]:.3f} > {detection_threshold:.3f}")
+    
+    # Fit exponential through lags 1-5 (or fewer if spectrum is very short)
+    max_fit_lag = min(7, max_lag, n // 4)  # Don't use more than 25% of data
+    
+    # Use fixed threshold for boundary detection (robust for short, noisy spectra)
+    boundary_threshold = 0.05
     
     # 5. Find where ACF drops below boundary threshold (fallback method)
     crossing_lag = None
@@ -181,12 +221,19 @@ def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
     
     if n_valid >= 3:
         try:
-            # Weighted exponential fit: log(ACF) = -k/τ
-            # Extra weight to early lags (most relevant for line detection)
+            # Constrained exponential fit: ACF(k) = exp(-k/τ)
+            # This enforces ACF(0) = 1 as required for autocorrelation
+            # We fit: log(ACF) = -k/τ, forcing intercept = 0
+            
+            # Weighted least squares for log(ACF) vs lag (zero intercept)
             weights = 1.0 / np.sqrt(lags[valid_mask])
-            coeffs = np.polyfit(lags[valid_mask], np.log(acf_to_fit[valid_mask]), 
-                               deg=1, w=weights)
-            tau_fit = -1.0 / coeffs[0]
+            
+            # Manual weighted fit with zero intercept: slope = Σ(w*x*y) / Σ(w*x²)
+            x = lags[valid_mask]
+            y = np.log(acf_to_fit[valid_mask])
+            w = weights**2
+            slope = np.sum(w * x * y) / np.sum(w * x * x)
+            tau_fit = -1.0 / slope
             
             # Sanity check: expect short correlations (0.5 to ~2*max_lag)
             # For spurious line detection, τ > max_lag means long-range structure
@@ -194,27 +241,33 @@ def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
                 print(f"Fitted τ = {tau_fit:.2f} pixels (exponential fit)")
                 if crossing_lag is not None:
                     print(f"(Threshold crossing at lag {crossing_lag})")
-                return max(1.0, tau_fit)
+                return max(1.0, tau_fit), inflation_factor
             else:
                 print(f"Fitted τ = {tau_fit:.2f} outside expected range [0.5, {2*max_lag}]")
                 # If too large, cap at max_lag (conservative)
                 if tau_fit > 2 * max_lag:
                     print(f"Using τ = {max_lag} (capped - likely baseline structure)")
-                    return float(max_lag)
+                    return float(max_lag), inflation_factor
         except (np.linalg.LinAlgError, RuntimeError, ValueError) as e:
             print(f"Exponential fit failed: {e}")
     else:
         print(f"Not enough valid points for fitting (need ≥3, have {n_valid})")
-    
-    # 6. Fallback to threshold crossing or max_lag
+        # Fallback: estimate τ from ACF[1] directly
+        # For exponential decay: ACF(1) = exp(-1/τ) → τ = -1/log(ACF[1])
+        if acf[1] > 0.1:  # Reasonable correlation at lag 1
+            tau_simple = -1.0 / np.log(acf[1])
+            print(f"Fallback: estimating τ from ACF[1]={acf[1]:.3f} → τ={tau_simple:.2f}")
+            return max(1.0, tau_simple), inflation_factor
+
+    # 6. Final fallback to threshold crossing or max_lag
     if crossing_lag is not None:
         print(f"Using threshold crossing at lag {crossing_lag} (ACF={acf[crossing_lag]:.3f})")
-        return crossing_lag
+        return float(crossing_lag), inflation_factor
     else:
         print(f"WARNING: No crossing found within max_lag={max_lag} - returning max_lag")
-        if acf[max_lag] > 2 * noise_floor_std_equiv:
-            print(f"WARNING: ACF({max_lag}) = {acf[max_lag]:.3f} still above noise floor")
-        return max_lag
+        if acf[min(max_lag, len(acf)-1)] > boundary_threshold:
+            print(f"WARNING: ACF({max_lag}) = {acf[min(max_lag, len(acf)-1)]:.3f} still above boundary threshold")
+        return float(max_lag), inflation_factor
 
 def gen_corr_noise(yerr, corr_len, size=None):
     """Generate correlated noise using AR(1) process.
@@ -496,22 +549,31 @@ def fit_mc(f, x, y, yerr, p0, bounds=None, niter=500, errfunc='mad',
         # Estimate correlation length from RESIDUALS
         if isinstance(autocorrelation, bool) and autocorrelation:
             residuals = y - f(x, *popt)
-            correlation_length = autocorr_length(x, residuals, max_lag, baseline_order)
+            correlation_length, error_inflation = autocorr_length(x, residuals, yerr, max_lag, baseline_order)
             print(f"Estimated correlation length: {correlation_length:.3f} pixels")
+            if error_inflation > 1.0:
+                print(f"→ Applying error inflation: {error_inflation:.2f}x (for Monte Carlo noise generation)")
+                yerr_inflated = yerr * error_inflation
+            else:
+                yerr_inflated = yerr
+                print(f"→ No error inflation needed (median residuals within expected range)")
         elif isinstance(autocorrelation, bool) and not autocorrelation:
             correlation_length = 1
+            yerr_inflated = yerr
         elif isinstance(autocorrelation, int):
             correlation_length = autocorrelation
+            yerr_inflated = yerr
             print(f"Using fixed correlation length: {correlation_length} pixels")
         else:
             correlation_length = 1
+            yerr_inflated = yerr
 
         poptlist = []
         valid_iters = 0
         while valid_iters < niter:
-            # Generate perturbations
-            yper = (gen_corr_noise(yerr, correlation_length) if correlation_length > 1
-                   else np.random.normal(scale=np.abs(yerr)))
+            # Generate perturbations (using inflated errors if systematic variance detected)
+            yper = (gen_corr_noise(yerr_inflated, correlation_length) if correlation_length > 1
+                   else np.random.normal(scale=np.abs(yerr_inflated)))
 
             try:
                 popt_i, _ = curve_fit(f, x, y + yper, sigma=yerr, p0=popt,

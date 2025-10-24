@@ -39,7 +39,7 @@ for true_tau in test_taus:
     
     # Estimate tau (as would be done from fit residuals)
     wave = np.arange(n_points)
-    estimated_tau = autocorr_length(wave, noise, max_lag=max_lag, baseline_order=None)
+    estimated_tau, inflation_factor = autocorr_length(wave, noise, yerr, max_lag=max_lag, baseline_order=None)
     
     # Calculate error
     error = estimated_tau - true_tau

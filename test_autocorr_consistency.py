@@ -41,7 +41,7 @@ for true_tau in test_taus:
     max_lag_to_use = max(20, int(3 * true_tau))
     
     print(f"\nUsing max_lag = {max_lag_to_use}")
-    estimated_tau = autocorr_length(wave, noise, max_lag=max_lag_to_use, baseline_order=None)
+    estimated_tau, inflation_factor = autocorr_length(wave, noise, yerr, max_lag=max_lag_to_use, baseline_order=None)
     
     # Calculate error
     error = estimated_tau - true_tau
