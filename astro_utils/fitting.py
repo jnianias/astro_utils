@@ -2,6 +2,7 @@
 from . import constants as const
 import numpy as np
 from scipy.optimize import curve_fit
+from scipy.stats import median_abs_deviation
 import warnings
 from . import models as mdl
 from astropy.stats import sigma_clipped_stats
@@ -52,8 +53,28 @@ def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
     emission lines. Uses residuals after model fitting to focus on noise structure.
     
     Returns the e-folding length τ where ACF(τ) = 1/e ≈ 0.368.
-    Conservative by design: better to overestimate τ (inflate MC errors) than 
-    underestimate (overconfident fits).
+    
+    Algorithm:
+    ----------
+    Uses a two-stage detection approach analogous to object detection in imaging:
+    
+    **Stage 1: Significance Test**
+        Tests if ACF(1) exceeds a strict threshold (median + 2σ of noise floor).
+        If not, returns τ=1 immediately (no correlation detected).
+        This prevents estimating correlation lengths from pure noise fluctuations.
+    
+    **Stage 2: Boundary Detection**
+        Once correlation is confirmed, measures its extent using a liberal 
+        threshold (median of noise floor). This is like finding the boundary 
+        of a detected object: we ask "where does the signal return to background?"
+        
+    The noise floor is estimated from the ACF tail (lags > max_lag) using the
+    Median Absolute Deviation (MAD), which is robust to outliers and residual
+    baseline structure.
+    
+    Philosophy: Conservative for detection (avoid false positives), liberal for
+    measurement (avoid underestimating τ). Better to accept real correlations 
+    than miss them, but require clear evidence before claiming correlation exists.
     
     Parameters:
     -----------
@@ -72,6 +93,13 @@ def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
     --------
     tau : float
         Correlation length in pixels (>= 1.0)
+        Returns 1.0 if no significant correlation detected at lag 1
+    
+    Notes:
+    ------
+    For spectroscopic data, correlation at lag 1 (adjacent pixels) is expected
+    if any correlation exists. Higher lags without lag-1 correlation are 
+    physically unrealistic, so the lag-1 test is sufficient for detection.
     """
     # 1. Baseline removal with diagnostics
     if baseline_order is not None:
@@ -80,35 +108,48 @@ def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
     else:
         residuals = spec - np.mean(spec)
 
-    residuals = residuals - np.mean(residuals)
-
     # 2. ACF calculation with normalization check
-    acf = np.correlate(residuals, residuals, mode='full')[len(residuals)-1:]
+    acf = np.correlate(residuals, residuals, mode='full')[len(residuals)-1:] # slicing gets positive lags
     if acf[0] <= 0:
+        print("WARNING: Non-positive ACF(0); returning τ=1")
         return 1  # Protection against bad normalization
     acf = acf / acf[0]
 
-    # 3. Estimate noise floor from tail
+    # 3. Estimate noise floor from tail using robust MAD estimator
+    # MAD is less sensitive to long-range correlations from baseline structure
     tail_start = min(max_lag + 1, len(acf)-20)
     tail_acf = acf[tail_start:tail_start+20]
-    noise_floor_mean = np.mean(tail_acf)
-    noise_floor_std = np.std(tail_acf)
+    noise_floor_median = np.median(tail_acf)
+    noise_floor_mad = median_abs_deviation(tail_acf)
     
-    # Conservative threshold: 90th percentile of noise distribution (1.28 sigma)
-    threshold = max(0.1, noise_floor_mean + 1.28 * noise_floor_std)
+    # MAD * 1.4826 converts MAD to equivalent standard deviation for Gaussian
+    noise_floor_std_equiv = 1.4826 * noise_floor_mad
     
     print(f"\nACF[:10]: {acf[1:11]}")
-    print(f"Noise floor: {noise_floor_mean:.3f} +/- {noise_floor_std:.3f}")
-    print(f"Threshold (90th percentile): {threshold:.3f}")
+    print(f"ACF tail: median={noise_floor_median:.3f}, MAD={noise_floor_mad:.3f} (σ-equiv={noise_floor_std_equiv:.3f})")
     
-    # 4. Find where ACF drops below threshold (fallback method)
+    # 4. Stage 1: Test if there's significant correlation at lag 1
+    # Use strict threshold (2σ) to avoid false detections
+    detection_threshold = noise_floor_median + 2.0 * noise_floor_std_equiv
+    
+    if acf[1] < detection_threshold:
+        print(f"No significant correlation: ACF(1)={acf[1]:.3f} < {detection_threshold:.3f} (detection threshold)")
+        print("Returning τ=1 (uncorrelated)")
+        return 1.0
+    
+    # Stage 2: Correlation detected - measure extent using liberal boundary threshold
+    print(f"Correlation detected: ACF(1)={acf[1]:.3f} > {detection_threshold:.3f}")
+    boundary_threshold = max(0.1, noise_floor_median)
+    print(f"Measuring extent with boundary threshold: {boundary_threshold:.3f}")
+    
+    # 5. Find where ACF drops below boundary threshold (fallback method)
     crossing_lag = None
     for k in range(1, min(max_lag, len(acf)-1)):
-        if acf[k] < threshold:
+        if acf[k] < boundary_threshold:
             crossing_lag = k
             break
     
-    # 5. Fit exponential decay ACF(k) = exp(-k/τ) to estimate τ
+    # 6. Fit exponential decay ACF(k) = exp(-k/τ) to estimate τ
     # For spectroscopy: focus on short lags (1-5 pixels) where noise mimics lines
     # Don't fit too far - long-range correlations from baseline structure aren't relevant
     
@@ -123,8 +164,8 @@ def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
     else:
         # No crossing found - use max_lag but warn
         fit_up_to = max_lag
-        if acf[max_lag] > threshold:
-            print(f"WARNING: ACF({max_lag}) = {acf[max_lag]:.3f} still above threshold")
+        if acf[max_lag] > boundary_threshold:
+            print(f"WARNING: ACF({max_lag}) = {acf[max_lag]:.3f} still above boundary threshold")
             print(f"         Long-range correlation detected - may be baseline structure")
     
     # Fit exponential to early lags
@@ -171,7 +212,7 @@ def autocorr_length(wave, spec, max_lag=10, baseline_order=None):
         return crossing_lag
     else:
         print(f"WARNING: No crossing found within max_lag={max_lag} - returning max_lag")
-        if acf[max_lag] > 2 * noise_floor_std:
+        if acf[max_lag] > 2 * noise_floor_std_equiv:
             print(f"WARNING: ACF({max_lag}) = {acf[max_lag]:.3f} still above noise floor")
         return max_lag
 
