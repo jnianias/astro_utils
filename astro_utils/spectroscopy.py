@@ -616,20 +616,7 @@ def flag_fitted_line(megatab, index, linename, spectab=None,
     - Peak amplitude uncertainty is computed using proper error propagation via the
       error_propagation package, accounting for uncertainties in both flux and FWHM.
       If error columns are not present, flux error is estimated from FLUX/SNR.
-    
-    Example:
-    --------
-    >>> from astropy.table import Table
-    >>> import numpy as np
-    >>> megatab = Table({'LPEAK_CIV1548': [5000.0],
-    ...                  'LPEAK_ERR_CIV1548': [0.5],
-    ...                  'FLUX_CIV1548': [1e-17],
-    ...                  'SNR_CIV1548': [5.0],
-    ...                  'FWHM_CIV1548': [2.0],
-    ...                  'FLAG_CIV1548': ['']})
-    >>> result = flag_fitted_line(megatab, 0, 'CIV1548')
-    >>> print(megatab['FLAG_CIV1548'][0])
-    't'
+ 
     """
     row = megatab[index]
     
@@ -810,3 +797,171 @@ def check_sky_contamination(lpeak, lpeak_err, flux, sig=5):
     # Users can extend this by loading the full MUSE sky line catalog if needed
     
     return False
+
+
+def avg_lines(row, lines, absorption=False, velbounds=[-2400, 2400], velstep=60., 
+              lya=False, zelda_z=False, z=None, flags=False, spec_source='R21', spectype='weight_skysub'):
+    """
+    Average multiple spectral lines onto a common velocity scale.
+    
+    This function loads a spectrum, transforms specified lines to velocity space,
+    interpolates them onto a common velocity grid, and computes a weighted average.
+    This is useful for stacking multiple emission or absorption lines to improve
+    signal-to-noise or measure systemic velocities.
+    
+    Parameters
+    ----------
+    row : astropy.table.Row
+        Catalog row containing source information. Must have 'CLUSTER', 'iden', 'idfrom',
+        and optionally 'LPEAKR' (for default redshift), 'Z_ZELDA', and line
+        parameters if `flags=True`.
+    lines : list of str
+        List of line names to average. Line names must be keys in the wavedict
+        from constants module (e.g., ['CIII1907', 'CIII1909', 'HeII1640']).
+    absorption : bool, optional
+        If True, weight by average SNR of continuum (better for absorption features).
+        If False, weight by inverse mean variance (better for emission). Default is False.
+    velbounds : list of float, optional
+        Velocity range [vmin, vmax] in km/s for the output spectrum. Default is [-2400, 2400].
+    velstep : float, optional
+        Velocity bin size in km/s for the output spectrum. Default is 60.
+    lya : bool, optional
+        Reserved for Lyman alpha specific handling (currently unused). Default is False.
+    zelda_z : bool, optional
+        If True, use 'Z_ZELDA' from the row instead of default redshift. 
+        Returns None if Z_ZELDA <= 2.9. Default is False.
+    z : float, optional
+        Redshift to use for wavelength-to-velocity conversion. If None, uses
+        row['LPEAKR'] / 1215.67 - 1 as default. Default is None.
+    flags : bool, optional
+        If True, skip lines with bad flags (FLAG_{line} != '') or invalid wavelengths.
+        Default is False.
+    spec_source : str, optional
+        Source of the spectrum: 'R21' for Richard et al. (2021) spectra or 'APER' 
+        for aperture-extracted spectra. Default is 'R21'.
+    spectype : str, optional
+        Type of spectrum to load. For R21: 'weight_skysub', 'noweight', etc.
+        For APER: '2fwhm', '1fwhm', etc. Default is 'weight_skysub'.
+    
+    Returns
+    -------
+    newvelax : numpy.ndarray
+        Common velocity axis in km/s.
+    line_avg_wtd : numpy.ndarray
+        Weighted average flux density in units of 10^-20 erg s^-1 cm^-2 (km/s)^-1.
+        Returns array of NaN if no valid lines found.
+    line_avgerr_wtd : numpy.ndarray
+        Uncertainty on the weighted average flux density (same units).
+        Returns array of NaN if no valid lines found.
+    
+    Notes
+    -----
+    - Lines outside MUSE wavelength coverage (4750-9350 Å) are automatically skipped.
+    - Lines named 'LYALPHA', 'SiII1527', or 'DUST' are always skipped.
+    - Weighting strategy differs based on `absorption` parameter:
+        * absorption=True: weight ∝ (median SNR)^2 to emphasize high-contrast regions
+        * absorption=False: weight ∝ 1/(median variance) for optimal S/N in emission
+    - The function converts flux density from f_λ to f_v accounting for (1+z).
+    
+    Examples
+    --------
+    >>> from astro_utils import spectroscopy as auspec
+    >>> from astro_utils import constants as auconst
+    >>> # Average optically-thin emission lines using R21 spectra
+    >>> lines = ['CIII1907', 'CIII1909', 'HeII1640', 'OIII1666']
+    >>> vel, flux, flux_err = auspec.avg_lines(
+    ...     catalog_row, lines, absorption=False, velbounds=[-2000, 2000],
+    ...     spec_source='R21', spectype='weight_skysub'
+    ... )
+    >>> # Average absorption lines using aperture spectra with flag checking
+    >>> abs_lines = ['SiII1260', 'CII1334', 'SiIV1394']
+    >>> vel, flux, flux_err = auspec.avg_lines(
+    ...     catalog_row, abs_lines, absorption=True, flags=True,
+    ...     spec_source='APER', spectype='2fwhm'
+    ... )
+    """
+    newvelax = np.arange(velbounds[0], velbounds[1] + velstep, velstep)
+    clus = row['CLUSTER']
+    iden = row['iden']
+    clid = f"{clus}.{iden}"
+    
+    # Load spectrum using the appropriate function
+    idfrom = row['idfrom']
+    spectab = load_spec(clus=clus, iden=iden, idfrom=idfrom, spec_source=spec_source, spectype=spectype)
+    
+    if spectab is None:
+        return newvelax, np.zeros(np.size(newvelax)) * np.nan, np.zeros(np.size(newvelax)) * np.nan
+    
+    # Determine redshift
+    if z is None:
+        z = row['LPEAKR'] / 1215.67 - 1.
+    if zelda_z:
+        z = row['Z_ZELDA']
+        if not (z > 2.9):
+            return newvelax, None, None
+    
+    wave = spectab['wave'].data  # Generate wavelength axis
+    spec = spectab['spec'].data
+    spec_err = spectab['spec_err'].data
+    
+    interpd_specs = []
+    interpd_specerrs = []
+    weights = []
+    
+    # Velocity binning: we make this as coarse as possible to still get meaningful error bars
+    for i, line in enumerate(lines):
+        # Skip certain lines
+        if line in ['LYALPHA', 'SiII1527', 'DUST']:
+            pass
+        elif flags and ((row[f"FLAG_{line}"] not in ['']) or not (row[f"LBDA_REST_{line}"] > 0.)):
+            continue
+        
+        rest_wl = wavedict[line]
+        
+        # Ignore lines that are close to or beyond the edge of MUSE wavelength coverage
+        if (rest_wl * (1 + z) < np.min(wave) + 10. or rest_wl * (1 + z) > np.max(wave) - 10.) and (line != 'LYALPHA'):
+            print(f'Cannot process {line} for {clid} as outside of range {np.min(wave):.1f} to {np.max(wave):.1f} Å')
+            continue
+        
+        # Transform wavelength axis into velocity axis
+        vel = wave2vel(wave, rest_wl, redshift=z)
+        velrange = np.logical_and(velbounds[0] < vel, vel < velbounds[1])
+        
+        vel_mini = vel[velrange]
+        wave_mini = wave[velrange]
+        wavebins = np.ediff1d(wave_mini, to_end=np.ediff1d(wave_mini)[-1:])
+        velbins = np.ediff1d(vel_mini, to_end=np.ediff1d(vel_mini)[-1:])
+        
+        # Convert to flux units
+        spec_flux = spec[velrange] * wavebins
+        spec_err_flux = spec_err[velrange] * wavebins
+        
+        # Convert to flux density per km/s (includes (1+z) factor)
+        spec_vel = spec_flux / velbins
+        spec_err_vel = spec_err_flux / velbins
+        
+        # Interpolate to standardized velocity axis
+        flux_interper = np.interp(newvelax, vel_mini, spec_vel)
+        flux_err_interper = np.interp(newvelax, vel_mini, spec_err_vel)
+        
+        # Calculate weight
+        if absorption:
+            # Weight by average SNR of the CONTINUUM for absorption features
+            weight = np.nanmedian(flux_interper / flux_err_interper) ** 2.
+        else:
+            # Weight by inverse mean variance for emission features
+            weight = np.nanmedian(flux_err_interper) ** (-2.)
+        
+        weights.append(weight)
+        interpd_specs.append(flux_interper)
+        interpd_specerrs.append(flux_err_interper)
+    
+    # Return NaN arrays if no valid lines were processed
+    if len(interpd_specs) == 0:
+        return newvelax, np.zeros(np.size(newvelax)) * np.nan, np.zeros(np.size(newvelax)) * np.nan
+    else:
+        # Compute weighted average
+        line_avg_wtd = np.nansum(np.array([w * s for w, s in zip(weights, interpd_specs)]), axis=0) / np.nansum(np.array(weights), axis=0)
+        line_avgerr_wtd = np.sqrt(np.nansum(np.array([np.square(w * s) for w, s in zip(weights, interpd_specerrs)]), axis=0)) \
+                            / np.nansum(np.array(weights), axis=0)
+        return newvelax, line_avg_wtd, line_avgerr_wtd

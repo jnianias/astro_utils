@@ -3,6 +3,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from . import spectroscopy as spectro
+from . import models
 import copy
 
 def plotline(iden, clus, idfrom, wln, ax_in, spec_source = '2fwhm', width=100, model=None, title = False,
@@ -120,3 +121,116 @@ def plotline(iden, clus, idfrom, wln, ax_in, spec_source = '2fwhm', width=100, m
 
     if return_spectrum:
         return spectab[region]
+
+
+def lya_mod_plot(row, axin, eml=False):
+    """
+    Plot Lyman alpha models on a given axis in velocity space.
+    
+    This function generates a high-resolution model of the Lyman alpha line profile
+    and plots it in velocity space on the provided axis. It can handle both single-peak
+    and double-peak Lyman alpha models with different baseline types (constant, linear,
+    or damped) depending on the fit parameters available in the row.
+    
+    Parameters
+    ----------
+    row : dict or table row
+        A dictionary or table row containing the fit parameters for the Lyman alpha profile.
+        Must contain the following keys:
+        - 'LPEAKR': Rest-frame wavelength of the red peak (Angstroms)
+        - 'AMPR': Amplitude of the red peak
+        - 'DISPR': Dispersion of the red peak 
+        - 'ASYMR': Asymmetry parameter of the red peak
+        - 'CONT': Continuum level
+        - 'SNRB': Signal-to-noise ratio of the blue peak
+        If SNRB > 3.0, also requires:
+        - 'AMPB': Amplitude of the blue peak
+        - 'LPEAKB': Rest-frame wavelength of the blue peak (Angstroms)
+        - 'DISPB': Dispersion of the blue peak
+        - 'ASYMB': Asymmetry parameter of the blue peak
+        For linear baseline (if 'SLOPE' is not NaN):
+        - 'SLOPE': Linear slope parameter
+        For damped baseline (if 'TAU' is not NaN):
+        - 'TAU': Damping parameter
+        - 'FWHM': Full width at half maximum for damped profile
+        - 'LPEAK_ABS': Peak wavelength of absorption component
+        If eml=True, also requires:
+        - 'DELTAV_LYA': Velocity offset for emission lines (km/s)
+    
+    axin : matplotlib.axes.Axes
+        The matplotlib axis object on which to plot the model.
+    
+    eml : bool, optional
+        If True, applies a velocity offset (DELTAV_LYA) to the model.
+        Default is False.
+    
+    Returns
+    -------
+    None
+        The function plots directly on the provided axis and does not return anything.
+    
+    Notes
+    -----
+    - The function creates a high-resolution wavelength grid spanning ±40 Angstroms
+      around the red peak wavelength with 1000 points.
+    - Model selection hierarchy:
+      1. If 'SLOPE' is not NaN: uses linear baseline models (lya_speak_lin/lya_dpeak_lin)
+      2. Elif 'TAU' is not NaN: uses damped baseline models (lya_speak_damp/lya_dpeak_damp)  
+      3. Else: uses constant baseline models (lya_speak/lya_dpeak)
+    - Uses single-peak model if blue SNR <= 3.0, otherwise uses double-peak model.
+    - Converts wavelength to velocity using the Lyman alpha rest wavelength (1215.67 Å).
+    - The flux is converted from wavelength space to velocity space using dλ/dv.
+    - The model is plotted as a dashed maroon line with 60% opacity.
+    """
+    # Create high-resolution wavelength grid around the red peak
+    hireswl = np.linspace(row['LPEAKR'] - 40, row['LPEAKR'] + 40, 1000)
+    
+    # Determine baseline type and select appropriate model functions
+    has_linear_baseline = 'SLOPE' in row and not np.isnan(row['SLOPE'])
+    has_damped_baseline = 'TAU' in row and not np.isnan(row['TAU'])
+    
+    if has_linear_baseline:
+        # Use linear baseline models
+        if row['SNRB'] > 3.0:
+            # Double-peak with linear baseline
+            hiresmod = models.lya_dpeak_lin(hireswl, row['AMPB'], row['LPEAKB'], row['DISPB'], row['ASYMB'],
+                                           row['AMPR'], row['LPEAKR'], row['DISPR'], row['ASYMR'], 
+                                           row['CONT'], row['SLOPE'])
+        else:
+            # Single-peak with linear baseline
+            hiresmod = models.lya_speak_lin(hireswl, row['AMPR'], row['LPEAKR'], row['DISPR'], row['ASYMR'], 
+                                           row['CONT'], row['SLOPE'])
+    elif has_damped_baseline:
+        # Use damped baseline models
+        if row['SNRB'] > 3.0:
+            # Double-peak with damped baseline
+            hiresmod = models.lya_dpeak_damp(hireswl, row['AMPB'], row['LPEAKB'], row['DISPB'], row['ASYMB'],
+                                            row['AMPR'], row['LPEAKR'], row['DISPR'], row['ASYMR'], 
+                                            row['CONT'], row['TAU'], row['FWHM'], row['LPEAK_ABS'])
+        else:
+            # Single-peak with damped baseline
+            hiresmod = models.lya_speak_damp(hireswl, row['AMPR'], row['LPEAKR'], row['DISPR'], row['ASYMR'], 
+                                            row['CONT'], row['TAU'], row['FWHM'], row['LPEAK_ABS'])
+    else:
+        # Use constant baseline models (original behavior)
+        if row['SNRB'] > 3.0:
+            # Double-peak with constant baseline
+            hiresmod = models.lya_dpeak(hireswl, row['AMPB'], row['LPEAKB'], row['DISPB'], row['ASYMB'],
+                                       row['AMPR'], row['LPEAKR'], row['DISPR'], row['ASYMR'], row['CONT'])
+        else:
+            # Single-peak with constant baseline
+            hiresmod = models.lya_speak(hireswl, row['AMPR'], row['LPEAKR'], row['DISPR'], row['ASYMR'], row['CONT'])
+    
+    # Convert wavelength to velocity
+    hiresvel = spectro.wave2vel(hireswl, 1215.67, redshift=row['LPEAKR'] / 1215.67 - 1)
+    
+    # Apply velocity offset if requested
+    if eml and 'DELTAV_LYA' in row:
+        hiresvel += row['DELTAV_LYA']
+    
+    # Convert flux from wavelength space to velocity space (dλ/dv)
+    dldv = np.ediff1d(hireswl, to_end=np.ediff1d(hireswl)[-1]) / np.ediff1d(hiresvel, to_end=np.ediff1d(hiresvel)[-1])
+    
+    # Plot the model
+    axin.plot(hiresvel[1:-1], dldv[1:-1] * hiresmod[1:-1], 
+              color='maroon', alpha=0.6, label=r"model", linestyle='--')

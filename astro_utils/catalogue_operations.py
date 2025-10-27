@@ -449,3 +449,72 @@ def update_table(megatable, index, linename, params, param_errs, rchsq, flag='')
         
         if flag_col in megatable.colnames:
             megatable[flag_col][index] = flag
+
+
+def is_true_emitter(tab, wavedict, sig=3.0, n=1, return_lines=False):
+    """
+    Identify true emission line sources in a spectroscopic catalog.
+    
+    This function checks for statistically significant emission line detections
+    that are not flagged as problematic (e.g., contaminated by sky lines). A source
+    is considered a "true emitter" if it has at least `n` emission lines detected
+    above the specified significance threshold with valid flags.
+    
+    Parameters
+    ----------
+    tab : astropy.table.Table or astropy.table.Row
+        Catalog table or single row containing spectroscopic measurements.
+        Must contain columns for each line in wavedict with format:
+        'SNR_{linename}' for signal-to-noise ratio and 'FLAG_{linename}' for flags.
+    wavedict : dict
+        Dictionary mapping line names (str) to rest-frame wavelengths (float).
+        Lines named 'LYALPHA' are excluded from the check.
+    sig : float, optional
+        Significance threshold (in sigma) for line detection. Default is 3.0.
+    n : int, optional
+        Minimum number of significant emission lines required to classify
+        as a true emitter. Default is 1.
+    return_lines : bool, optional
+        If True, returns a tuple of (boolean array, list of detected lines).
+        If False, returns only the boolean array. Default is False.
+    
+    Returns
+    -------
+    bool or numpy.ndarray
+        Boolean or array of booleans indicating whether each source is a true emitter
+        (has >= n significant, unflagged emission line detections).
+    list of lists, optional
+        If return_lines=True, returns a list where each element is a list of
+        line names detected for that source.
+    
+    Notes
+    -----
+    - Valid flags are empty strings ('') or 'na' (not available).
+    - Lyman alpha ('LYALPHA') is explicitly excluded from the analysis.
+    - For a single row input, returns a scalar boolean (or tuple with single-element list).
+    
+    Examples
+    --------
+    >>> from astro_utils import catalogue_operations as aucat
+    >>> from astro_utils import constants as auconst
+    >>> # Check for sources with at least 2 significant emission lines
+    >>> emitters = aucat.is_true_emitter(catalog, auconst.wavedict, sig=3.0, n=2)
+    >>> emitter_catalog = catalog[emitters]
+    >>> # Get the specific lines detected for each emitter
+    >>> emitters, detected_lines = aucat.is_true_emitter(
+    ...     catalog, auconst.wavedict, sig=3.0, n=1, return_lines=True
+    ... )
+    """
+    tv = np.zeros(len(tab['Z']) if isinstance(tab['Z'], (np.ndarray, aptb.Table.Column)) else 1).astype(int)
+    trulist = [[] for r in tv]
+    for line in wavedict:
+        if line == 'LYALPHA':
+            continue
+        else:
+            tv += ((tab[f'SNR_{line}'] > sig) *
+                       ((tab[f'FLAG_{line}'] == '') + (tab[f'FLAG_{line}'] == 'na'))).astype(int)
+            truidcs = np.where((tab[f'SNR_{line}'] > sig)
+                        * ((tab[f'FLAG_{line}'] == '') + (tab[f'FLAG_{line}'] == 'na')))
+            for idx in truidcs[0]:
+                trulist[idx].append(line)
+    return (tv >= n, trulist) if return_lines else tv >= n

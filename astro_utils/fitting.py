@@ -570,7 +570,12 @@ def fit_mc(f, x, y, yerr, p0, bounds=None, niter=500, errfunc='mad',
 
         poptlist = []
         valid_iters = 0
-        while valid_iters < niter:
+        total_iters = 0
+        max_total_iters = 2 * niter
+        
+        while valid_iters < niter and total_iters < max_total_iters:
+            total_iters += 1
+            
             # Generate perturbations (using inflated errors if systematic variance detected)
             yper = (gen_corr_noise(yerr_inflated, correlation_length) if correlation_length > 1
                    else np.random.normal(scale=np.abs(yerr_inflated)))
@@ -590,6 +595,11 @@ def fit_mc(f, x, y, yerr, p0, bounds=None, niter=500, errfunc='mad',
             except RuntimeError:
                 print(f"Iteration {valid_iters} failed to converge; skipping.")
                 continue
+        
+        # Warn if we hit the max iteration limit
+        if total_iters >= max_total_iters and valid_iters < niter:
+            print(f"Warning: Reached maximum iteration limit ({max_total_iters}). "
+                  f"Only {valid_iters}/{niter} successful fits obtained.")
 
         if not poptlist:
             raise RuntimeError("All MC iterations failed to converge")
