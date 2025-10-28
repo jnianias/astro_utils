@@ -1,6 +1,8 @@
 import astropy.table as aptb
 import numpy as np
 from astropy.io import fits
+from astropy.table import Column, vstack
+import astropy.units as u
 import requests
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -492,18 +494,7 @@ def is_true_emitter(tab, wavedict, sig=3.0, n=1, return_lines=False):
     - Valid flags are empty strings ('') or 'na' (not available).
     - Lyman alpha ('LYALPHA') is explicitly excluded from the analysis.
     - For a single row input, returns a scalar boolean (or tuple with single-element list).
-    
-    Examples
-    --------
-    >>> from astro_utils import catalogue_operations as aucat
-    >>> from astro_utils import constants as auconst
-    >>> # Check for sources with at least 2 significant emission lines
-    >>> emitters = aucat.is_true_emitter(catalog, auconst.wavedict, sig=3.0, n=2)
-    >>> emitter_catalog = catalog[emitters]
-    >>> # Get the specific lines detected for each emitter
-    >>> emitters, detected_lines = aucat.is_true_emitter(
-    ...     catalog, auconst.wavedict, sig=3.0, n=1, return_lines=True
-    ... )
+
     """
     tv = np.zeros(len(tab['Z']) if isinstance(tab['Z'], (np.ndarray, aptb.Table.Column)) else 1).astype(int)
     trulist = [[] for r in tv]
@@ -518,3 +509,88 @@ def is_true_emitter(tab, wavedict, sig=3.0, n=1, return_lines=False):
             for idx in truidcs[0]:
                 trulist[idx].append(line)
     return (tv >= n, trulist) if return_lines else tv >= n
+
+
+def find_closest_cluster_member(row, maxdist=5.0 * u.arcsec, return_all=False):
+    """
+    Find the closest cluster member(s) to a target galaxy based on normalized distance.
+    
+    This function identifies surrounding galaxies most likely to have an impact on the
+    fitting by looking at their properties and calculating a normalized distance metric
+    (distance weighted by flux/magnitude).
+    
+    Parameters
+    ----------
+    row : dict or astropy.table.Row
+        Row containing target galaxy information with keys:
+        - 'CLUSTER': cluster name
+        - 'RA': right ascension in degrees
+        - 'DEC': declination in degrees
+        - 'z': redshift
+    maxdist : astropy.units.Quantity, optional
+        Maximum angular distance to search for neighbors. Default is 5.0 arcsec.
+    return_all : bool, optional
+        If True, return all qualifying neighbors sorted by normalized distance.
+        If False, return only the closest neighbor. Default is False.
+    
+    Returns
+    -------
+    astropy.table.Table or astropy.table.Row or list
+        If return_all=True: Table of all qualifying neighbors sorted by NORMDIST,
+                           or empty list if none found.
+        If return_all=False: Row of the closest neighbor, or None if none found.
+    
+    Notes
+    -----
+    The normalized distance is calculated as: distance / sqrt(flux), where flux
+    is derived from the F814W magnitude. This weights closer bright objects more
+    heavily than distant faint objects.
+    
+    Filtering criteria:
+    - Distance must be <= maxdist
+    - Redshift must be <= 2.9
+    - Redshift confidence (zconf) must be >= 2
+    """
+    clus = row['CLUSTER']
+    ortab = load_r21_catalogue(clus)
+    ortab.add_column(Column([np.inf for p in ortab], name='NORMDIST'))
+    
+    def normalised_distance(distance, magnitude):
+        """Calculate normalized distance weighted by flux."""
+        dist_arcsec = distance.to(u.arcsec)
+        flux = 10 ** (-magnitude / 2.5)
+        return dist_arcsec.value / np.sqrt(flux)
+
+    target_ra = row['RA']
+    target_dec = row['DEC']
+    target_z = row['z']
+
+    min_normdist = np.inf
+    best_galaxy = None
+    closelist = []
+
+    for crow in ortab:
+        galaxy_ra = crow['RA']
+        galaxy_dec = crow['DEC']
+        galaxy_z = crow['z']
+        distance = np.sqrt((target_ra - galaxy_ra)**2 + (target_dec - galaxy_dec)**2) * u.deg
+        normdist = normalised_distance(distance, crow['MAG_ISO_HST_F814W'])
+        
+        # Apply filtering criteria
+        if distance.to(u.arcsec) > maxdist or galaxy_z > 2.9 or crow['zconf'] < 2:
+            continue
+        elif return_all:
+            crow['NORMDIST'] = normdist
+            closelist.append(crow)
+        
+        if normdist < min_normdist:
+            min_normdist = normdist
+            best_galaxy = crow
+
+    if return_all and len(closelist) > 0:
+        ctab = vstack(closelist)
+        ctab.sort(keys='NORMDIST')
+    elif return_all:
+        ctab = []
+
+    return ctab if return_all else best_galaxy

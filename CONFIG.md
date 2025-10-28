@@ -20,6 +20,12 @@ $ASTRO_DATA_DIR/
 │       ├── A2744/
 │       ├── MACS0416/
 │       └── ...
+├── muse_data/             # MUSE data cubes
+│   ├── A2744/
+│   │   └── cube/          # Cube FITS files
+│   ├── MACS0416/
+│   │   └── cube/
+│   └── ...
 └── source_spectra/        # Aperture spectra files
     ├── A2744/
     ├── MACS0416/
@@ -59,6 +65,12 @@ None of the environment variables are strictly required. If not set, the package
 - **Description**: Override for the source spectra directory (overrides `ASTRO_DATA_DIR` setting)
 - **Default**: `$ASTRO_DATA_DIR/source_spectra`
 - **Example**: `export SOURCE_SPECTRA_DIR="/custom/path/to/source_spectra"`
+
+#### `MUSE_CUBE_DIR`
+- **Description**: Override for the MUSE data cube directory (overrides `ASTRO_DATA_DIR` setting)
+- **Default**: `$ASTRO_DATA_DIR/muse_data`
+- **Example**: `export MUSE_CUBE_DIR="/custom/path/to/muse_data"`
+- **Note**: Each cluster's cubes should be in subdirectories: `$MUSE_CUBE_DIR/{cluster}/cube/*.fits`
 
 ## Setting Environment Variables
 
@@ -128,6 +140,15 @@ $ASTRO_DATA_DIR/
 │       │   └── ...
 │       └── BULLET/
 │           └── ...
+├── muse_data/
+│   ├── A2744/
+│   │   └── cube/
+│   │       ├── DATACUBE-A2744.fits
+│   │       └── ...
+│   ├── MACS0416/
+│   │   └── cube/
+│   │       └── ...
+│   └── ...
 └── source_spectra/
     ├── A2744/
     │   ├── idX1234_2fwhm_spec.fits
