@@ -2,7 +2,7 @@
 from . import constants as const
 import numpy as np
 from scipy.optimize import curve_fit
-from scipy.stats import median_abs_deviation
+from scipy.stats import median_abs_deviation, norm
 import warnings
 from . import models as mdl
 from astropy.stats import sigma_clipped_stats
@@ -411,7 +411,7 @@ def check_multiple_peaks(wave, residuals, err, fitted_peak_wave, fitted_amplitud
     
     # Get peak properties
     peak_waves = wave[peaks_idx]
-    peak_amplitudes = residuals[peaks_idx]  # Signed amplitudes
+    peak_amplitudes = abs_residuals[peaks_idx]  # Use absolute residuals where peaks were found
     peak_snrs = significance[peaks_idx]
     
     # Estimate widths of peaks using scipy's peak_widths
@@ -438,8 +438,8 @@ def check_multiple_peaks(wave, residuals, err, fitted_peak_wave, fitted_amplitud
         if separation < min_separation * fitted_width:
             continue  # This is probably the fitted line itself
         
-        # Check amplitude ratio
-        amplitude_ratio = np.abs(pa) / np.abs(fitted_amplitude)
+        # Check amplitude ratio (pa is already absolute value from abs_residuals)
+        amplitude_ratio = pa / np.abs(fitted_amplitude)
         if amplitude_ratio < amplitude_ratio_threshold:
             continue  # Too weak
         
@@ -475,6 +475,27 @@ def check_multiple_peaks(wave, residuals, err, fitted_peak_wave, fitted_amplitud
         'reduced_chi2': reduced_chi2,
         'message': message
     }
+
+
+def sigma_to_percentile(sigma):
+    """
+    Convert sigma level to percentile for non-Gaussian uncertainties.
+    
+    Parameters:
+    sigma (float): Sigma level (e.g., 1, 2, 3 for 1σ, 2σ, 3σ)
+    
+    Returns:
+    float: Percentile value representing the confidence level
+    """
+    
+    # Calculate the two-tailed percentile
+    # For Gaussian: P(|X| < kσ) = erf(k/√2)
+    confidence_level = norm.cdf(sigma) - norm.cdf(-sigma)
+    
+    # Convert to percentile (0-100 scale)
+    percentile = confidence_level * 100
+    
+    return percentile
 
 
 def avgfunc(poptl, errfunc, sig_clip = 7.0):
@@ -1146,3 +1167,69 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row = None, width=25, a
     else:
         multipeak_flag = fit.get('multipeak_flag', '')
         return fit['param_dict'], fit['error_dict'], fit['model'], fit['reduced_chisq'], multipeak_flag
+
+
+def flatten_spectrum(spectrum, return_continuum=False):
+    """
+    Remove a linear continuum trend from a spectrum.
+    
+    This function fits a straight line to the spectrum and subtracts the slope,
+    leaving only the continuum level. This is useful for absorption line analysis
+    where you want to remove large-scale continuum variations.
+    
+    Parameters
+    ----------
+    spectrum : numpy.ndarray
+        1D array of flux values to flatten.
+    return_continuum : bool, optional
+        If True, return both the flattened spectrum and the fitted continuum model.
+        If False, return only the flattened spectrum. Default is False.
+    
+    Returns
+    -------
+    flattened : numpy.ndarray
+        Spectrum with linear trend removed, retaining only the continuum level.
+    continuum : numpy.ndarray (only if return_continuum=True)
+        The fitted linear continuum model.
+    
+    Notes
+    -----
+    - Uses scipy.optimize.curve_fit with a simple linear model: f(x) = a*x + b
+    - The returned spectrum has the slope removed but keeps the continuum level (b)
+    - This preserves the approximate flux level while removing linear trends
+    - Useful for normalizing absorption features before stacking
+    
+    Examples
+    --------
+    >>> from astro_utils import fitting as aufit
+    >>> import numpy as np
+    >>> # Create a spectrum with linear trend
+    >>> x = np.arange(100)
+    >>> spec = 10.0 + 0.05 * x + np.random.normal(0, 0.1, 100)
+    >>> # Flatten it
+    >>> flat_spec = aufit.flatten_spectrum(spec)
+    >>> # Or get the continuum model too
+    >>> flat_spec, continuum = aufit.flatten_spectrum(spec, return_continuum=True)
+    """
+    
+    def linear(x, a, b):
+        """Simple linear function for continuum fitting."""
+        return a * x + b
+    
+    # Create pixel array
+    pixels = np.arange(len(spectrum))
+    
+    # Fit linear function to the spectrum
+    popt, pcov = curve_fit(linear, pixels, spectrum, p0=[0, 0])
+    
+    # Calculate the continuum model
+    continuum_model = linear(pixels, *popt)
+    
+    # Remove the slope but keep the continuum level
+    # This is: spectrum - (a*x + b) + b = spectrum - a*x
+    flattened = spectrum - continuum_model + popt[1]
+    
+    if return_continuum:
+        return flattened, continuum_model
+    else:
+        return flattened

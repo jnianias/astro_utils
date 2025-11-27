@@ -70,6 +70,64 @@ def gaussian_doublet(wavelength_ratio):
     
     return doublet_func
 
+def gaussian_doublet_vel(wavelengths, z=0):
+    """
+    Double Gaussian function for fitting doublet lines in velocity space with a fixed wavelength ratio.
+
+    Parameters
+    ----------
+    wavelengths: tuple
+        The wavelengths of the two lines in the doublet.
+    z: float, optional
+        Redshift to apply to the wavelengths (default is 0).
+    
+    Returns
+    -------
+    doublet_func : function
+        A double-gaussian function with a fixed velocity separation that can be used for curve fitting.
+    """
+    # Calculate observed wavelengths
+    wave1 = wavelengths[0] * (1 + z)
+    wave2 = wavelengths[1] * (1 + z)
+
+    # Calculate the separation in velocity space using the relativistic Doppler formula
+    delta_v = const.c * ( (wave2**2 - wave1**2) / (wave2**2 + wave1**2) )
+
+
+    def doublet_func(x, flux1, center, fwhm, flux2, continuum, slope):
+        """
+        x: Wavelength array
+        flux1:      Integrated flux of the first Gaussian
+        center:     Center velocity of the first Gaussian
+        fwhm:       Full Width at Half Maximum (FWHM) of both Gaussians
+        flux2:      Integrated flux of the second Gaussian
+        continuum:  Continuum level at the center wavelength
+        slope:      Slope of the continuum
+        """
+        # Convert FWHM to standard deviation
+        sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
+        
+        # Calculate amplitudes from integrated fluxes
+        amp1 = flux1 / (sigma * np.sqrt(2 * np.pi))
+        amp2 = flux2 / (sigma * np.sqrt(2 * np.pi))
+        
+        # Second Gaussian center
+        center2 = center + delta_v
+
+        # Midpoint between the two centers for continuum calculation
+        mid_center = (center + center2) / 2
+        
+        # Gaussian functions
+        gauss1 = amp1 * np.exp(-0.5 * ((x - center) / sigma) ** 2)
+        gauss2 = amp2 * np.exp(-0.5 * ((x - center2) / sigma) ** 2)
+        
+        # Continuum (linear)
+        continuum_term = continuum + slope * (x - mid_center)
+        
+        return gauss1 + gauss2 + continuum_term
+    
+    return doublet_func
+
 
 def asym_gauss(x, amp, lpeak, disp, asym):
         """Single asymmetric Gaussian function for Lyman-alpha emission line.

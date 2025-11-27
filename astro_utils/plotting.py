@@ -185,11 +185,15 @@ def lya_mod_plot(row, axin, eml=False):
     # Create high-resolution wavelength grid around the red peak
     hireswl = np.linspace(row['LPEAKR'] - 40, row['LPEAKR'] + 40, 1000)
     
-    # Determine baseline type and select appropriate model functions
-    has_linear_baseline = 'SLOPE' in row and not np.isnan(row['SLOPE'])
-    has_damped_baseline = 'TAU' in row and not np.isnan(row['TAU'])
+    # Determine baseline type (matching logic in lya_profile.py)
+    # Check for SLOPE first (linear baseline), but TAU takes precedence if present
+    baseline_type = 'const'  # default
+    if not np.isnan(row['SLOPE']):
+        baseline_type = 'lin'
+    elif not np.isnan(row['TAU']):
+        baseline_type = 'damp'  # damped overrides linear if both present
     
-    if has_linear_baseline:
+    if baseline_type == 'lin':
         # Use linear baseline models
         if row['SNRB'] > 3.0:
             # Double-peak with linear baseline
@@ -200,7 +204,7 @@ def lya_mod_plot(row, axin, eml=False):
             # Single-peak with linear baseline
             hiresmod = models.lya_speak_lin(hireswl, row['AMPR'], row['LPEAKR'], row['DISPR'], row['ASYMR'], 
                                            row['CONT'], row['SLOPE'])
-    elif has_damped_baseline:
+    elif baseline_type == 'damp':
         # Use damped baseline models
         if row['SNRB'] > 3.0:
             # Double-peak with damped baseline

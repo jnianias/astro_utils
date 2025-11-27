@@ -29,9 +29,19 @@ def mask_skylines(wavelength):
     """
     Masks out regions around known sky lines to avoid contamination in fits.
 
-    wavelength: wavelength array
-    lambda_obs: observed wavelength of the line
-    continuum_buffer: buffer region around the line to include in the fit
+    Parameters:
+    -----------
+    wavelength : array_like
+        Wavelength array.
+    lambda_obs : float
+        Observed wavelength of the line.
+    continuum_buffer : float
+        Buffer region around the line to include in the fit.
+
+    Returns:
+    --------
+        array_like
+            Boolean mask array indicating regions to exclude.
     """
     sky_mask = np.ones_like(wavelength, dtype=bool)
 
@@ -44,8 +54,19 @@ def mask_otherlines(wavelength, expected_wavelength, linename):
     """
     Mask out regions around other known lines to avoid contamination in fits.
     
-    wavelength: wavelength array
-    linename  : name of the line (needs to be in wavedict)
+    Parameters:
+    -----------
+    wavelength : array_like
+        Wavelength array.
+    expected_wavelength : float
+        Expected observed wavelength of the line being fitted.
+    linename   : str
+        Name of the line (needs to be in wavedict).
+
+    Returns:
+    --------
+        array_like
+            Boolean mask array indicating regions to exclude.
     """
     # Get all other lines except the one being fitted and its doublet partner (if any)
     otherlines = [line for line in wavedict.keys() 
@@ -70,12 +91,25 @@ def generate_spec_mask(wavelength, spectrum, errors, lpeak_init, continuum_buffe
     Generates a mask for the fitting region around a specified observed wavelength,
     excluding problematic areas (zeros, nans, infs), skylines, and unrelated spectral lines.
 
-    wavelength: wavelength array
-    spectrum  : flux density array
-    errors    : flux density uncertainties
-    lpeak_init: initial guess for the observed wavelength of the line
-    continuum_buffer: buffer region around the line to include in the fit
-    linename   : name of the line (needs to be in wavedict)
+    Parameters:
+    -----------
+    wavelength : array_like
+        Wavelength array.
+    spectrum  : array_like
+        Flux density array.
+    errors    : array_like
+        Flux density uncertainties.
+    lpeak_init : float
+        Initial guess for the observed wavelength of the line.
+    continuum_buffer : float
+        Buffer region around the line to include in the fit.
+    linename   : str
+        Name of the line (needs to be in wavedict).
+
+    Returns:
+    --------
+        array_like
+            Boolean mask array indicating the fitting region.
     """
     # Fitting region +/- continuum_buffer around the line
     fit_mask = (wavelength > (lpeak_init - continuum_buffer)) & (wavelength < (lpeak_init + continuum_buffer))
@@ -109,9 +143,19 @@ def get_lsf_fwhm(lsf_lpeak, step = 1.25):
     return (x1 - x0) * step
 
 def muse_lsf_fwhm_poly(lam):
-    """Return the FWHM of the MUSE LSF at wavelength lam (in Angstroms).
-    Uses the polynomial model given in pyplatefit documentation: 
+    """Return the FWHM of the MUSE LSF at wavelength lam (in Angstroms), using the 
+    polynomial model given in pyplatefit documentation: 
     https://pyplatefit.readthedocs.io/en/latest/tutorial.html
+
+    Parameters:
+    -----------
+    lam : float
+        Wavelength in Angstroms.
+
+    Returns:
+    --------
+        float
+            FWHM of the MUSE LSF at the given wavelength.
     """
     return 5.19939 - 7.56746 * 1e-4 * lam + 4.93397 * 1e-8 * lam**2.
 
@@ -123,12 +167,18 @@ def wave2vel(observed_wavelength, rest_wavelength, redshift = 0):
     accounting for systemic redshift and using the full relativistic Doppler formula.
 
     Parameters:
-    observed_wavelength (float): Observed wavelength in the same units as rest_wavelength.
-    rest_wavelength (float): Rest wavelength of the spectral line.
-    redshift (float): Systemic redshift of the source.
+    -----------
+    observed_wavelength : float
+        Observed wavelength in the same units as rest_wavelength.
+    rest_wavelength : float
+        Rest wavelength of the spectral line.
+    redshift : float
+        Systemic redshift of the source.
 
     Returns:
-    float: Velocity in the target object's rest frame, in km/s.
+    --------
+        float
+            Velocity in the target object's rest frame, in km/s.
     """
     # Speed of light in km/s
     c = 299792.458
@@ -153,12 +203,18 @@ def vel2wave(vel, restLambda, z = 0.):
     accounting for systemic redshift and using the full relativistic Doppler formula.
 
     Parameters:
-    vel (float): Velocity in the target object's rest frame, in km/s.
-    restLambda (float): Rest wavelength of the spectral line.
-    z (float): Systemic redshift of the source.
+    -----------
+    vel : float
+        Velocity in the target object's rest frame, in km/s.
+    restLambda : float
+        Rest wavelength of the spectral line.
+    z : float
+        Systemic redshift of the source.
 
     Returns:
-    float: Observed wavelength in the same units as restLambda.
+    --------
+        float
+            Observed wavelength in the same units as restLambda.
     """
     # Speed of light in km/s
     c = 299792.458
@@ -183,7 +239,11 @@ def get_data_dir():
     """
     Get the base data directory from the ASTRO_DATA_DIR environment variable.
     If not set, prompts the user to provide the path.
-    Returns the path as a string.
+    
+    Returns:
+    --------
+        str
+            The base data directory path.
     """
     
     data_dir = os.environ.get('ASTRO_DATA_DIR')
@@ -212,7 +272,11 @@ def get_spectra_dir():
     """
     Get the R21 spectra directory from the R21_SPECTRA_DIR environment variable.
     If not set, prompts the user to provide the path.
-    Returns the path as a string.
+    
+    Returns:
+    --------
+        str
+            The R21 spectra directory path.
     """
     
     spectra_dir = os.environ.get('R21_SPECTRA_DIR')
@@ -242,7 +306,12 @@ def get_source_spectra_dir():
     """
     Get the source spectra directory from the SOURCE_SPECTRA_DIR environment variable.
     If not set, prompts the user to provide the path.
-    Returns the path as a string.
+
+    
+    Returns:
+    --------
+        str
+            The source spectra directory path.
     """
     
     source_dir = os.environ.get('SOURCE_SPECTRA_DIR')
@@ -272,8 +341,16 @@ def get_spectra_url():
     """
     Get the spectra base URL from the R21_URL environment variable.
     If not set, prompt the user to enter it interactively.
-    Returns the URL as a string.
-    Raises ValueError if not set and user does not provide one.
+    
+    Returns:
+    --------
+        str
+            The spectra base URL.
+    
+    Raises:
+    -------
+        ValueError
+            If not set and user does not provide one.
     """
     import os
     url = os.environ.get('R21_URL')
@@ -290,12 +367,25 @@ def get_spectra_url():
         raise ValueError("R21 spectra base URL is required but not provided.")
     
 def load_spec(clus, iden, idfrom, spec_source = 'R21', spectype = 'weight_skysub'):
-    """Loads a spectrum from the specified source
-    clus: Cluster name (e.g., 'A2744', 'MACS0416', etc.)
-    iden: Identifier number of the object (e.g., 1234)
-    idfrom: Prefix letter of the identifier (e.g., 'E' for E1234)
-    spec_source: Source of the spectrum ('R21' for Richard et al. 2021, 'APER' for aperture spectra)
-    spectype: Type of spectrum to load (either 'weight_syksub' or '2fwhm', etc.)
+    """Loads a spectrum from the specified source.
+    
+    Parameters:
+    -----------
+    clus : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+    iden : int
+        Identifier number of the object (e.g., 1234)
+    idfrom : str
+        Prefix letter of the identifier (e.g., 'E' for E1234)
+    spec_source : str
+        Source of the spectrum ('R21' for Richard et al. 2021, 'APER' for aperture spectra)
+    spectype : str
+        Type of spectrum to load (either 'weight_skysub' or '2fwhm', etc.)
+
+    Returns:
+    --------
+        astropy.table.Table or None
+            The loaded spectrum table, or None if loading failed.
     """
     if spec_source == 'R21':
         return load_r21_spec(clus, iden, idfrom, spectype)
@@ -305,11 +395,23 @@ def load_spec(clus, iden, idfrom, spec_source = 'R21', spectype = 'weight_skysub
         raise ValueError(f"spec_source {spec_source} not recognized. Use 'R21' or 'APER'.")
 
 def load_r21_spec(clus, iden, idfrom, spectype):
-    """Loads a spectrum from the Richard et al. (2021) catalog
-    clus: Cluster name (e.g., 'A2744', 'MACS0416', etc.)
-    iden: Identifier number of the object (e.g., 1234)
-    idfrom: Prefix letter of the identifier (e.g., 'E' for E1234)
-    spectype: Type of spectrum to load
+    """Loads a spectrum from the Richard et al. (2021) catalog.
+    
+    Parameters:
+    -----------
+    clus : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+    iden : int
+        Identifier number of the object (e.g., 1234)
+    idfrom : str
+        Prefix letter of the identifier (e.g., 'E' for E1234)
+    spectype : str
+        Type of spectrum to load
+
+    Returns:
+    --------
+        astropy.table.Table or None
+            The loaded spectrum table, or None if loading failed.
     """
     # Generate the full identifier
     if iden[0].isdigit():
@@ -386,14 +488,26 @@ def load_r21_spec(clus, iden, idfrom, spectype):
     return result
 
 def load_aper_spec(clus, iden, idfrom, spectype = '2fwhm'):
-    """Loads a spectrum from the aperture spectra files
-    clus: Cluster name (e.g., 'A2744', 'MACS0416', etc.)
-    iden: Identifier number of the object (e.g., 1234)
-    idfrom: Prefix letter of the identifier (e.g., 'E' for E1234)
-    spectype: Type of spectrum to load ('2fwhm', '1fwhm', etc.)
+    """Loads a spectrum from the aperture spectra files.
+    
+    Parameters:
+    -----------
+    clus : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+    iden : str
+        Identifier string of the object (e.g., 'X1234')
+    idfrom : str
+        Prefix letter of the identifier (e.g., 'E' for E1234) - not used for aperture spectra
+    spectype : str
+        Type of spectrum to load ('2fwhm', '1fwhm', etc.)
+
+    Returns:
+    --------
+        astropy.table.Table or None
+            The loaded spectrum table, or None if loading failed.
     """
-    # Generate the full identifier
-    identifier = (idfrom[0] + str(iden)).replace('E', 'X')
+    # For aperture spectra, use iden directly (already in correct format)
+    identifier = str(iden)
 
     print(f"Loading aperture spectrum for {clus} object {identifier}...")
 
@@ -426,10 +540,20 @@ def is_reasonable_dpeak(popt, perr, z = None):
     Reasonable double peaked fits should be (1) statistically significant in both peaks,
     (2) be spectrally resolved, (3) have the blue peak at lower wavelength than the red peak,
     (4) have a velocity separation less than 1000 km/s.
-    popt: List of fitted parameters from the lya_dpeak function
-    perr: List of parameter uncertainties from the lya_dpeak function
-    z: Redshift of the source (optional, used for velocity separation check)
-    Returns True if the fit is reasonable, False otherwise.
+
+    Parameters:
+    -----------
+        popt : list
+            List of fitted parameters from the lya_dpeak function
+        perr : list
+            List of parameter uncertainties from the lya_dpeak function
+        z : float, optional
+            Redshift of the source (used for velocity separation check)
+    
+    Returns:
+    --------
+        bool
+            True if the fit is reasonable, False otherwise.
     """
     # If z is not provided, get a rough estimate from the peak wavelength
     # of the red peak (popt[5])
@@ -473,13 +597,26 @@ def is_reasonable_dpeak(popt, perr, z = None):
 
 def get_line_spec(row, line, width, rest = True, spec_source = 'R21', spectype = 'weight_skysub'):
     """Extract a spectrum around a given line from a row of a catalog.
-    row: Row of the catalog (astropy Table row)
-    line: Name of the line (e.g., 'LYA', 'CIV', etc.)
-    width: Width around the line to extract (in Angstroms)
-    rest: If True, use rest-frame wavelength for the width; if False, use observed wavelength
-    spec_source: Source of the spectrum ('R21' for Richard et al. 2021, 'APER' for aperture spectra)
-    spectype: Type of spectrum to load (either 'weight_syksub' or '2fwhm', etc.)
-    Returns wavelength array, flux array, and error array.
+
+    Parameters:
+    -----------
+        row : astropy Table row
+            Row of the catalog
+        line : str
+            Name of the line (e.g., 'LYA', 'CIV', etc.)
+        width : float
+            Width around the line to extract (in Angstroms)
+        rest : bool
+            If True, use rest-frame wavelength for the width; if False, use observed wavelength
+        spec_source : str
+            Source of the spectrum ('R21' for Richard et al. 2021, 'APER' for aperture spectra)
+        spectype : str
+            Type of spectrum to load (either 'weight_skysub' or '2fwhm', etc.)
+
+    Returns:
+    --------
+        tuple of np.ndarray
+            Returns wavelength array, flux array, and error array.
     """
     if line not in wavedict:
         raise ValueError(f"Line {line} not recognized. Available lines: {list(wavedict.keys())}")
@@ -925,7 +1062,7 @@ def avg_lines(row, lines, absorption=False, velbounds=[-2400, 2400], velstep=60.
         
         # Transform wavelength axis into velocity axis
         vel = wave2vel(wave, rest_wl, redshift=z)
-        velrange = np.logical_and(velbounds[0] < vel, vel < velbounds[1])
+        velrange = np.logical_and(velbounds[0] - 200 < vel, vel < velbounds[1] + 200)
         
         vel_mini = vel[velrange]
         wave_mini = wave[velrange]
@@ -941,9 +1078,9 @@ def avg_lines(row, lines, absorption=False, velbounds=[-2400, 2400], velstep=60.
         spec_err_vel = spec_err_flux / velbins
         
         # Interpolate to standardized velocity axis
-        flux_interper = np.interp(newvelax, vel_mini, spec_vel)
-        flux_err_interper = np.interp(newvelax, vel_mini, spec_err_vel)
-        
+        flux_interper = np.interp(newvelax, vel_mini, spec_vel, left=np.nan, right=np.nan)
+        flux_err_interper = np.interp(newvelax, vel_mini, spec_err_vel, left=np.nan, right=np.nan)
+
         # Calculate weight
         if absorption:
             # Weight by average SNR of the CONTINUUM for absorption features
@@ -965,3 +1102,392 @@ def avg_lines(row, lines, absorption=False, velbounds=[-2400, 2400], velstep=60.
         line_avgerr_wtd = np.sqrt(np.nansum(np.array([np.square(w * s) for w, s in zip(weights, interpd_specerrs)]), axis=0)) \
                             / np.nansum(np.array(weights), axis=0)
         return newvelax, line_avg_wtd, line_avgerr_wtd
+
+
+def stack_spectra_across_sources(table, lines, velocity_frame='systemic', velbounds=[-2500, 2500], 
+                                  velstep=75.0, weighting='inverse_variance', absorption=False,
+                                  spec_source='R21', spectype='weight_skysub', mask=None,
+                                  systemic_column='DELTAV_LYA', lya_column='LPEAKR', sigclip_weights=None):
+    """
+    Stack spectral lines across multiple sources onto a common velocity grid.
+    
+    This function takes a table of sources, extracts and averages specified spectral
+    lines for each source (using avg_lines), shifts them to a common velocity frame,
+    and then stacks them across all sources using weighted averaging. This is useful
+    for creating composite spectra from populations of galaxies.
+    
+    Parameters
+    ----------
+    table : astropy.table.Table
+        Catalog table containing multiple sources. Each row represents one source.
+        Must contain columns for source identification (CLUSTER, iden, idfrom) and
+        velocity reference information.
+    lines : list of str
+        List of line names to average within each source before stacking. Line names
+        must be keys in the wavedict (e.g., ['SiII1260', 'CII1334']).
+    velocity_frame : str, optional
+        Reference frame for velocity alignment. Options:
+        - 'systemic': Align to systemic velocity using systemic_column (default)
+        - 'lyalpha': Align to Lyman-alpha peak (no additional shift)
+        Default is 'systemic'.
+    velbounds : list of float, optional
+        Velocity range [vmin, vmax] in km/s for the output spectrum.
+        Default is [-2500, 2500].
+    velstep : float, optional
+        Velocity bin size in km/s for interpolation and output.
+        Default is 75.0.
+    weighting : str or float, optional
+        Weighting scheme for stacking across sources. Options:
+        - 'inverse_variance': Weight by inverse median variance (1/σ²) (default)
+        - 'uniform': Equal weight for all sources
+        - 'inverse_error': Weight by inverse median error (1/σ)
+        - float: Custom exponent for weighting by σ -- -2 for inverse variance,
+          -1 for inverse error, 0 for uniform, etc.
+        - 'continuum': Weight by median SNR of continuum (better for absorption)
+        Default is 'inverse_variance'.
+    absorption : bool, optional
+        Passed to avg_lines(). If True, weight lines within each source by SNR
+        (better for absorption). If False, weight by inverse variance (better for
+        emission). Default is False.
+    spec_source : str, optional
+        Source of spectra: 'R21' or 'APER'. Passed to avg_lines().
+        Default is 'R21'.
+    spectype : str, optional
+        Type of spectrum to load (e.g., 'weight_skysub', '2fwhm').
+        Passed to avg_lines(). Default is 'weight_skysub'.
+    mask : numpy.ndarray or None, optional
+        Boolean mask to select subset of sources from table. If None, use all sources.
+        Default is None.
+    systemic_column : str, optional
+        Column name containing systemic velocity offset in km/s. Used when
+        velocity_frame='systemic'. Default is 'DELTAV_LYA'.
+    lya_column : str, optional
+        Column name containing Lyman-alpha peak wavelength for redshift calculation.
+        Default is 'LPEAKR'.
+    sigclip_weights : float or None, optional
+        If provided, apply sigma clipping to weights across sources at this
+        significance level before stacking. Default is None (no clipping).
+    
+    Returns
+    -------
+    velocity : numpy.ndarray
+        Common velocity axis in km/s.
+    stacked_flux : numpy.ndarray
+        Weighted stacked flux density in units of 10^-20 erg s^-1 cm^-2 (km/s)^-1.
+        Returns array of NaN if no valid sources.
+    stacked_error : numpy.ndarray
+        Uncertainty on stacked flux density (same units).
+        Returns array of NaN if no valid sources.
+    n_sources : int
+        Number of sources successfully included in the stack.
+    
+    Notes
+    -----
+    - Sources are skipped if avg_lines() returns all NaN (e.g., missing spectrum).
+    - For 'systemic' frame, velocity is shifted by the value in systemic_column.
+    - Weighting strategies:
+        * inverse_variance: w_i = 1 / median(σ_i²) - optimal for Gaussian errors
+        * uniform: w_i = 1 for all sources - robust to outliers
+        * inverse_error: w_i = 1 / median(σ_i) - intermediate option
+    - Error propagation assumes independent measurements between sources.
+    
+    Examples
+    --------
+    >>> from astro_utils import spectroscopy as auspec
+    >>> # Stack low-ionization absorption lines in systemic frame
+    >>> vel, flux, err, n = auspec.stack_spectra_across_sources(
+    ...     table=catalog,
+    ...     lines=['SiII1260', 'CII1334'],
+    ...     velocity_frame='systemic',
+    ...     weighting='inverse_variance',
+    ...     absorption=True,
+    ...     mask=catalog['DV_LI_ABS'] > -np.inf
+    ... )
+    >>> print(f"Stacked {n} sources")
+    
+    >>> # Stack emission lines with uniform weighting
+    >>> vel, flux, err, n = auspec.stack_spectra_across_sources(
+    ...     table=catalog,
+    ...     lines=['CIII1907', 'CIII1909', 'HeII1640'],
+    ...     velocity_frame='lyalpha',
+    ...     weighting='uniform',
+    ...     absorption=False
+    ... )
+    """
+    
+    # Apply mask if provided
+    if mask is not None:
+        sources = table[mask]
+    else:
+        sources = table
+    
+    # Initialize lists to collect spectra and errors
+    spec_list = []
+    err_list = []
+    
+    # Common velocity grid for interpolation
+    common_vel = np.arange(velbounds[0], velbounds[1] + velstep, velstep)
+    
+    # Process each source
+    for row in sources:
+        # Average lines within this source
+        vel, spec, spec_err = avg_lines(
+            row, lines, 
+            absorption=absorption,
+            velbounds=velbounds,
+            velstep=velstep,
+            spec_source=spec_source,
+            spectype=spectype
+        )
+        
+        # Skip if spectrum is all NaN
+        if np.all(np.isnan(spec)):
+            print(f"Skipping source {row['CLUSTER']}.{row['iden']} - no valid spectrum")
+            continue
+        
+        # Shift velocity frame if requested
+        if velocity_frame == 'systemic':
+            if systemic_column not in row.colnames:
+                raise ValueError(f"Column '{systemic_column}' not found in table. "
+                               f"Available columns: {row.colnames}")
+            deltav = row[systemic_column]
+            if np.isnan(deltav) or np.isinf(deltav):
+                # Skip sources without valid systemic velocity
+                continue
+            vel_shifted = vel + deltav
+        elif velocity_frame == 'lyalpha':
+            vel_shifted = vel
+        else:
+            raise ValueError(f"velocity_frame must be 'systemic' or 'lyalpha', got '{velocity_frame}'")
+        
+        # Interpolate to common velocity grid
+        spec_interp = np.interp(common_vel, vel_shifted, spec)
+        err_interp = np.interp(common_vel, vel_shifted, spec_err)
+        
+        spec_list.append(spec_interp)
+        err_list.append(err_interp)
+    
+    # Check if we have any valid spectra
+    if len(spec_list) == 0:
+        return common_vel, np.full_like(common_vel, np.nan), np.full_like(common_vel, np.nan), 0
+    
+    # Convert to arrays for easier manipulation
+    spec_array = np.array(spec_list)  # Shape: (n_sources, n_velocity_bins)
+    err_array = np.array(err_list)
+
+    #TESTING
+    print(spec_array.shape, err_array.shape)
+
+    # Determine weight exponent based on string or float input
+    weight_dict = {
+        'inverse_variance': -2,
+        'uniform': 0,
+        'inverse_error': -1
+    }
+    if isinstance(weighting, str) and weighting != 'continuum':
+        weight_exponent = weight_dict.get(weighting, None)
+        if weight_exponent is None:
+            raise ValueError(f"weighting must be 'inverse_variance', 'uniform', or 'inverse_error', "
+                           f"got '{weighting}'")
+    elif isinstance(weighting, (int, float)):
+        weight_exponent = weighting
+    elif weighting != 'continuum':
+        raise ValueError(f"weighting must be a string or float, got '{type(weighting)}'")
+    
+    # Weight by inverse median variance: w_i = 1 / median(σ_i²)
+    median_err = np.nanmedian(err_array, axis=1)
+    if weighting == 'continuum':
+        # Weight by median SNR of continuum for absorption features
+        median_spec = np.nanmedian(spec_array, axis=1)
+        median_snr = median_spec / median_err
+        weights = np.where(np.isfinite(median_snr), median_snr, 0.0)
+    else:
+        # Handle sources with all-NaN errors or zero errors
+        weights = np.where((median_err > 0) & np.isfinite(median_err), 
+                        median_err ** (weight_exponent), 0.0)
+        
+    # Apply sigma clipping to weights if requested
+    if sigclip_weights is not None:
+        weight_scmean, weight_scmedian, weight_scstd = sigma_clipped_stats(weights, sigma=3, maxiters=5)
+        upper_limit = weight_scmedian + sigclip_weights * weight_scstd
+        weights[weights > upper_limit] = upper_limit
+    
+    # Reshape weights for broadcasting: (n_sources, 1)
+    weights = weights[:, np.newaxis]
+    
+    # Compute weighted average across sources
+    # stacked_flux = Σ(w_i * flux_i) / Σ(w_i)
+    weighted_sum = np.nansum(weights * spec_array, axis=0)
+    weight_sum = np.nansum(weights, axis=0)
+    stacked_flux = weighted_sum / weight_sum
+    
+    # Propagate errors: σ_stacked = √(Σ(w_i² * σ_i²)) / Σ(w_i)
+    weighted_err_squared = np.nansum((weights * err_array) ** 2, axis=0)
+    stacked_error = np.sqrt(weighted_err_squared) / weight_sum
+    
+    n_sources = len(spec_list)
+    
+    return common_vel, stacked_flux, stacked_error, n_sources
+
+
+def stack_entire_spectra(table, weighting = 'inverse variance', sigclip_weights=None, 
+                         spec_source='R21', spectype='weight_skysub', wave_bounds=None,
+                         wave_step=1.25):
+    """
+    Stack entire spectra across multiple sources onto a common (rest frame) wavelength grid.
+    
+    This function takes a table of sources, loads their full spectra, and stacks
+    them across all sources using weighted averaging. This is useful for creating
+    composite spectra from populations of galaxies.
+    
+    Parameters
+    ----------
+    table : astropy.table.Table
+        Catalog table containing multiple sources. Each row represents one source.
+        Must contain columns for source identification (CLUSTER, iden, idfrom).
+    weighting : str or float, optional
+        Weighting scheme for stacking across sources. Options:
+        - 'inverse variance': Weight by inverse median variance (1/σ²) (default)
+        - 'uniform': Equal weight for all sources
+        - 'inverse error': Weight by inverse median error (1/σ)
+        - float: Custom exponent for weighting by σ -- -2 for inverse variance,
+          -1 for inverse error, 0 for uniform, etc.
+        Default is 'inverse variance'.
+    sigclip_weights : float or None, optional
+        If provided, apply sigma clipping to weights across sources at this
+        significance level before stacking. Default is None (no clipping).
+    spec_source : str, optional
+        Source of spectra: 'R21' or 'APER'. Default is 'R21'.
+    spectype : str, optional
+        Type of spectrum to use from the source. Default is 'weight_skysub'.
+    wave_bounds : list of float or None, optional
+        Wavelength range [λ_min, λ_max] in Angstroms for the output spectrum in the rest frame.
+        If None, use full overlapping range across all sources. Default is None.
+    wave_step : float, optional
+        Wavelength bin size in Angstroms for interpolation and output.
+        Default is 1.25.
+    
+    Returns
+    -------
+    common_wavelength : numpy.ndarray
+        Common rest frame wavelength grid onto which spectra are stacked.
+    stacked_flux : numpy.ndarray
+        Weighted average flux across sources at each wavelength.
+    stacked_error : numpy.ndarray
+        Propagated error of the stacked flux.
+    n_sources : int
+        Number of sources stacked.
+
+    Notes
+    -----
+    - Sources are skipped with a warning if their spectrum cannot be loaded.
+    - Weighting strategies:
+        * inverse_variance: w_i = 1 / median(σ_i²) - optimal for Gaussian errors
+        * uniform: w_i = 1 for all sources - robust to outliers
+        * inverse_error: w_i = 1 / median(σ_i) - intermediate option
+    - Error propagation assumes independent measurements between sources.
+    """
+    spec_list = []
+    err_list = []
+    wavelength_list = []
+
+    # Load spectra for each source
+    for row in table:
+        clus = row['CLUSTER']
+        iden = row['iden']
+        idfrom = row['idfrom']
+        
+        spectab = load_spec(clus=clus, iden=iden, idfrom=idfrom, spec_source=spec_source, spectype=spectype)
+        
+        if spectab is None:
+            print(f"Warning: Could not load spectrum for {clus}.{iden}. Skipping.")
+            continue
+
+        # De-redshift to rest frame using Lyman-alpha peak as a proxy
+        z = row['LPEAKR'] / 1215.67 - 1
+        rest_wave = spectab['wave'].data / (1 + z)
+
+        wavelength_list.append(rest_wave)
+        spec_list.append(spectab['spec'].data)
+        err_list.append(spectab['spec_err'].data)
+
+    # Check if we have any valid spectra
+    if len(spec_list) == 0:
+        return None, None, None, 0
+    
+    # Determine common wavelength grid
+    if wave_bounds is None:
+        # Use full overlapping range across all sources
+        wave_min = np.max([np.min(wave) for wave in wavelength_list])
+        wave_max = np.min([np.max(wave) for wave in wavelength_list])
+    else:
+        # Constrain to provided bounds or overlapping range, whichever is smaller
+        wave_min, wave_max = max(wave_bounds[0], np.max([np.min(wave) for wave in wavelength_list])), \
+                             min(wave_bounds[1], np.min([np.max(wave) for wave in wavelength_list]))
+    
+    # Create common wavelength axis
+    common_wavelength = np.arange(wave_min, wave_max, wave_step)
+
+    # Interpolate each spectrum onto the common wavelength grid
+    spec_array = []
+    err_array = []
+
+    for rest_wave, spec, err in zip(wavelength_list, spec_list, err_list):
+        spec_interp = np.interp(common_wavelength, rest_wave, spec)
+        err_interp = np.interp(common_wavelength, rest_wave, err)
+        
+        spec_array.append(spec_interp)
+        err_array.append(err_interp)
+
+    spec_array = np.array(spec_array)  # Shape: (n_sources, n_wavelength_bins)
+    err_array = np.array(err_array)  # Shape: (n_sources, n_wavelength_bins)
+
+    # Determine weight exponent based on string or float input
+    weight_dict = {
+        'inverse variance': -2,
+        'uniform': 0,
+        'inverse error': -1
+    }
+    if isinstance(weighting, str) and weighting != 'continuum':
+        weight_exponent = weight_dict.get(weighting, None)
+        if weight_exponent is None:
+            raise ValueError(f"weighting must be 'inverse variance', 'uniform', or 'inverse error', "
+                           f"got '{weighting}'")
+    elif isinstance(weighting, (int, float)):
+        weight_exponent = weighting
+    elif weighting != 'continuum':
+        raise ValueError(f"weighting must be a string or float, got '{type(weighting)}'")
+    
+    # Weight by inverse median variance: w_i = 1 / median(σ_i²)
+    median_err = np.nanmedian(err_array, axis=1)
+    if weighting == 'continuum':
+        # Weight by median SNR of continuum for absorption features
+        median_spec = np.nanmedian(spec_array, axis=1)
+        median_snr = median_spec / median_err
+        weights = np.where(np.isfinite(median_snr), median_snr, 0.0)
+    else:
+        # Handle sources with all-NaN errors or zero errors
+        weights = np.where((median_err > 0) & np.isfinite(median_err), 
+                        median_err ** (weight_exponent), 0.0)
+        
+    # Apply sigma clipping to weights if requested
+    if sigclip_weights is not None:
+        weight_scmean, weight_scmedian, weight_scstd = sigma_clipped_stats(weights, sigma=3, maxiters=5)
+        upper_limit = weight_scmedian + sigclip_weights * weight_scstd
+        weights[weights > upper_limit] = upper_limit
+
+    # Reshape weights for broadcasting: (n_sources, 1)
+    weights = weights[:, np.newaxis]
+
+    # Compute weighted average across sources
+    # stacked_flux = Σ(w_i * flux_i) / Σ(w_i)
+    weighted_sum = np.nansum(weights * spec_array, axis=0)
+    weight_sum = np.nansum(weights, axis=0)
+    stacked_flux = weighted_sum / weight_sum
+
+    # Propagate errors: σ_stacked = √(Σ(w_i² * σ_i²)) / Σ(w_i)
+    weighted_err_squared = np.nansum((weights * err_array) ** 2, axis=0)
+    stacked_error = np.sqrt(weighted_err_squared) / weight_sum
+    n_sources = len(spec_list)
+
+    return common_wavelength, stacked_flux, stacked_error, n_sources
