@@ -6,11 +6,19 @@ import astropy.units as u
 import requests
 from pathlib import Path
 from bs4 import BeautifulSoup
+
 import re
 import glob
 import os
 from . import spectroscopy as spectro
 from . import constants as const
+from . import io as io
+
+# Module-level constant for the R21 catalogue base URL
+R21_CATALOG_BASE_URL = os.environ.get(
+    'R21_CATALOG_BASE_URL',
+    'https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_data_release/catalogs/'
+)
 
 class R21CatalogNotFoundError(Exception):
     """Exception raised when R21 catalog is not available for a cluster"""
@@ -18,8 +26,15 @@ class R21CatalogNotFoundError(Exception):
 
 def get_catalog_dir():
     """
-    Get the catalog directory from environment variable or construct from base data dir.
-    Returns the path as a Path object.
+    Return the catalog directory as a Path object.
+
+    The directory is determined by the R21_CATALOG_DIR environment variable if set,
+    otherwise it is constructed from the base data directory.
+
+    Returns
+    -------
+    Path
+        Path object pointing to the catalog directory.
     """
     # Check for explicit override
     catalog_dir = os.environ.get('R21_CATALOG_DIR')
@@ -27,11 +42,28 @@ def get_catalog_dir():
         return Path(catalog_dir)
     
     # Otherwise construct from base data directory
-    base_dir = spectro.get_data_dir()
+    base_dir = io.get_data_dir()
     return Path(base_dir) / 'muse_catalogs' / 'catalogs'
 
 def load_r21_catalogue(cluster):
-    """Load R21 lensing catalog for a given cluster from local cache or download if not present"""
+    """
+    Load the R21 lensing catalog for a given cluster from local cache, or download if not present.
+
+    Parameters
+    ----------
+    cluster : str
+        Name of the cluster.
+
+    Returns
+    -------
+    astropy.table.Table
+        The R21 lensing catalog as an Astropy Table.
+
+    Raises
+    ------
+    R21CatalogNotFoundError
+        If the catalog cannot be found or downloaded.
+    """
     # Define the path to the local cache directory
     cache_dir = get_catalog_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -65,19 +97,56 @@ def load_r21_catalogue(cluster):
         raise R21CatalogNotFoundError(f"Failed to load R21 catalog for {cluster}: {e}")
         
 def has_valid_mul(row):
+    """
+    Check if the 'MUL' field in a row is valid (not None, not empty, not 'none').
+
+    Parameters
+    ----------
+    row : astropy.table.Row or dict
+        Row containing a 'MUL' field.
+
+    Returns
+    -------
+    bool
+        True if 'MUL' is valid, False otherwise.
+    """
     mul_value = row['MUL']
     return (mul_value is not None and 
             str(mul_value).strip() != '' and 
             str(mul_value).strip().lower() != 'none')
 
 def get_pointing_suffix(cluster_name):
-    """Extract pointing suffix from cluster name if it exists"""
+    """
+    Extract the pointing suffix from a cluster name if it exists.
+
+    Parameters
+    ----------
+    cluster_name : str
+        Name of the cluster.
+
+    Returns
+    -------
+    str
+        The pointing suffix (e.g., 'S', 'NE'), or an empty string if none.
+    """
     if cluster_name.endswith('S') or cluster_name.endswith('NE'):
         return cluster_name[-2:] if cluster_name.endswith('NE') else cluster_name[-1]
     return ''
 
 def make_r21_catalogue_dict(clusters):
-    """Create a dictionary of R21 lens tables for given clusters"""
+    """
+    Create a dictionary of R21 lens tables for the given clusters.
+
+    Parameters
+    ----------
+    clusters : list of str
+        List of cluster names.
+
+    Returns
+    -------
+    dict
+        Dictionary mapping cluster names to their R21 lens tables (Astropy Tables or None).
+    """
     lenstables = {}
     for clus in clusters:
         try:
@@ -88,13 +157,32 @@ def make_r21_catalogue_dict(clusters):
     return lenstables
 
 def is_counterpart(row1, row2, lenstables, sigma=3.0, method='fit_match'):
-    """Determine if two catalogue entries are counterparts based on specified method.
-    row1, row2: Astropy table rows representing catalogue entries
-    lenstables: Dictionary of R21 lens tables for clusters
-    sigma: Number of sigma for matching criteria
-    method: 'fit_match' or 'R21' to determine matching method
-    Returns: (is_counterpart: bool, significance: float)
-    """    
+    """
+    Determine if two catalogue entries are counterparts based on the specified method.
+
+    Parameters
+    ----------
+    row1 : astropy.table.Row
+        First catalogue entry.
+    row2 : astropy.table.Row
+        Second catalogue entry.
+    lenstables : dict
+        Dictionary of R21 lens tables for clusters.
+    sigma : float, optional
+        Number of sigma for matching criteria (default: 3.0).
+    method : str, optional
+        Matching method: 'fit_match' or 'R21' (default: 'fit_match').
+
+    Returns
+    -------
+    tuple
+        (is_counterpart: bool, significance: float)
+
+    Examples
+    --------
+    >>> is_counterpart(row1, row2, lenstables, sigma=3.0, method='fit_match')
+    (True, 1.2)
+    """
     # Immediately eliminate any cases where there's a big difference in z to speed things up
     if np.abs(row1['z'] - row2['z']) > 0.1:
         return False, np.inf
@@ -160,25 +248,47 @@ def is_counterpart(row1, row2, lenstables, sigma=3.0, method='fit_match'):
 
 
 def download_r21_catalogue(cluster, dest_dir=None):
-    """Download R21 lens catalog from server with case handling for Bullet cluster"""
-    
+
+    """
+    Download the R21 lens catalog from the server, with special case handling for the Bullet cluster.
+
+    The base URL can be overridden by setting the R21_CATALOG_BASE_URL environment variable.
+
+    Parameters
+    ----------
+    cluster : str
+        Name of the cluster.
+    dest_dir : str or Path, optional
+        Destination directory for the downloaded file. If None, uses the default catalog directory.
+
+    Returns
+    -------
+    str or None
+        Path to the downloaded FITS file, or None if not found.
+
+    Example
+    -------
+    >>> download_r21_catalogue('A2744')
+    '/path/to/catalog/A2744_v1.1.fits'
+    """
+
     # Use provided destination directory or get from configuration
     if dest_dir is None:
         dest_dir = get_catalog_dir()
     else:
         dest_dir = Path(dest_dir)
-    
+
     # Ensure destination directory exists
     dest_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Handle the special case for Bullet cluster
     if cluster.upper() == 'BULLET':
         server_cluster_name = 'Bullet'  # Lowercase on server
     else:
         server_cluster_name = cluster   # Normal case on server
 
-    # URL to scrape for available versions
-    base_url = f"https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_data_release/catalogs/"
+    # Use the module-level constant for the base URL
+    base_url = R21_CATALOG_BASE_URL
     print(f"Scraping directory listing: {base_url}")
     response = requests.get(base_url)
     soup = BeautifulSoup(response.text, "html.parser")
@@ -210,11 +320,27 @@ def download_r21_catalogue(cluster, dest_dir=None):
 
 
 def get_muse_cand(iden, clus):
-    """Get all MUSELET and PRIOR lines for a given iden in a given cluster
-    Includes a provision for M2055 and M20355 from MACS0416S since these have had their IDs changed
-    iden: Full identifier string (e.g., 'E1234', 'X5678')
-    clus: Cluster name (e.g., 'A2744', 'MACS0416', etc.)
-    Returns: Astropy table of lines for the object, sorted by SNR
+    """
+    Get all MUSELET and PRIOR lines for a given identifier in a given cluster.
+
+    Includes a provision for M2055 and M20355 from MACS0416S since these have had their IDs changed.
+
+    Parameters
+    ----------
+    iden : str
+        Full identifier string (e.g., 'E1234', 'X5678').
+    clus : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.).
+
+    Returns
+    -------
+    astropy.table.Table
+        Table of lines for the object, sorted by SNR.
+
+    Example
+    -------
+    >>> get_muse_cand('E1234', 'A2744')
+    <Table rows=...>
     """
     if iden in ['M2055', 'M20355'] and clus == 'MACS0416S':
         iden = iden[:-2] # Just remove the '55' at the end
@@ -248,7 +374,21 @@ def get_muse_cand(iden, clus):
     
 
 def get_line_table(iden, clus):
-    """Get a table of emission lines from the R21 catalogue for a given source."""
+    """
+    Get a table of emission lines from the R21 catalogue for a given source.
+
+    Parameters
+    ----------
+    iden : str
+        Source identifier.
+    clus : str
+        Cluster name.
+
+    Returns
+    -------
+    astropy.table.Table
+        Table of emission lines (excluding Lyman alpha), sorted by SNR.
+    """
     candidate_line_table = get_muse_cand(iden, clus)
 
     if len(candidate_line_table) == 0:
@@ -269,16 +409,33 @@ def get_line_table(iden, clus):
     
 
 def insert_fit_results(megatab, clus, iden, lya_results, other_results, avgmu, flags):
-    """Insert fitting results into the megatab for a given source.
-    megatab: an Astropy table, the megatab to insert results into
-    clus: the cluster identifier
-    iden: the source identifier
-    lya_results: tuple of dictionaries (params, errors) from the Lya fitting (keys the same as colnames)
-    other_results: dictionary of tuples of dictionaries (params, errors) from other line fittings,
-                   keyed by line name. The keys of the param and error dictionaries need to be appended
-                   with '_<line_name>' to match the megatab colnames.
-    NB: This function modifies the megatab in place, and as such requires the use of row indices
-    rather than row objects to insert the data.
+    """
+    Insert fitting results into the megatab for a given source.
+
+    This function modifies the megatab in place, updating the row corresponding to the given
+    cluster and identifier with the provided fitting results.
+
+    Parameters
+    ----------
+    megatab : astropy.table.Table
+        The megatab to insert results into.
+    clus : str
+        Cluster identifier.
+    iden : str
+        Source identifier.
+    lya_results : tuple
+        Tuple of dictionaries (params, errors, _, reduced_chisq) from the Lya fitting.
+    other_results : dict
+        Dictionary of tuples (params, errors, _, rchsq) from other line fittings, keyed by line name.
+    avgmu : float
+        Average magnification value to update.
+    flags : dict
+        Dictionary of flags for each line.
+
+    Example
+    -------
+    >>> insert_fit_results(megatab, 'A2744', 'E1234', lya_results, other_results, 2.1, flags)
+    # Updates megatab in place
     """
     # Find the index of the row to update
     row_index = np.where((megatab['CLUSTER'] == clus) & (megatab['iden'] == iden[1:]))[0]
@@ -335,34 +492,28 @@ def insert_fit_results(megatab, clus, iden, lya_results, other_results, avgmu, f
 def update_table(megatable, index, linename, params, param_errs, rchsq, flag=''):
     """
     Update a table with new fit parameters and statistics for a given index.
-    
+
     For Lyman alpha fits, uses special column naming conventions (e.g., 'FLUXB', 'RCHSQ').
     For other lines, appends the line name to column names (e.g., 'FLUX_CIII', 'RCHSQ_CIII').
     SNR values are calculated automatically from flux and error parameters.
-    
+
     Parameters
     ----------
     megatable : astropy.table.Table
-        The table to update
+        The table to update.
     index : int
-        The index of the row to update
+        The index of the row to update.
     linename : str
-        Name of the emission line (e.g., 'lya', 'CIII', 'OIII')
+        Name of the emission line (e.g., 'lya', 'CIII', 'OIII').
     params : dict
-        Dictionary of fit parameters (e.g., {'FLUXB': 1.2, 'FLUXR': 3.4, 'CONT': 0.5})
+        Dictionary of fit parameters (e.g., {'FLUXB': 1.2, 'FLUXR': 3.4, 'CONT': 0.5}).
     param_errs : dict
-        Dictionary of fit parameter errors (e.g., {'FLUXB': 0.1, 'FLUXR': 0.2})
+        Dictionary of fit parameter errors (e.g., {'FLUXB': 0.1, 'FLUXR': 0.2}).
     rchsq : float
-        Reduced chi-squared value of the fit
+        Reduced chi-squared value of the fit.
     flag : str, optional
-        Quality flag for the fit (default: ''). Common flags:
-        - 'm': Multiple comparable peaks detected
-        - 's': Sky line contamination
-        - 't': Line too thin
-        - 'n': Negative flux domination
-        - 'p': Peak-dominated
-        - 'c': Contamination
-        
+        Quality flag for the fit (default: '').
+
     Notes
     -----
     For Lyman alpha (linename='lya' or 'Lya'), column names are:
@@ -372,7 +523,6 @@ def update_table(megatable, index, linename, params, param_errs, rchsq, flag='')
         - Flag: 'FLAG' (no line name suffix)
         - SNRB calculated from FLUXB / FLUXB_ERR
         - SNRR calculated from FLUXR / FLUXR_ERR
-    
     For other lines, column names include the line name:
         - Parameters: 'FLUX_CIII', 'FWHM_CIII', etc.
         - Errors: 'FLUX_ERR_CIII', 'FWHM_ERR_CIII', etc.
@@ -456,12 +606,12 @@ def update_table(megatable, index, linename, params, param_errs, rchsq, flag='')
 def is_true_emitter(tab, wavedict, sig=3.0, n=1, return_lines=False):
     """
     Identify true emission line sources in a spectroscopic catalog.
-    
+
     This function checks for statistically significant emission line detections
     that are not flagged as problematic (e.g., contaminated by sky lines). A source
     is considered a "true emitter" if it has at least `n` emission lines detected
     above the specified significance threshold with valid flags.
-    
+
     Parameters
     ----------
     tab : astropy.table.Table or astropy.table.Row
@@ -479,7 +629,7 @@ def is_true_emitter(tab, wavedict, sig=3.0, n=1, return_lines=False):
     return_lines : bool, optional
         If True, returns a tuple of (boolean array, list of detected lines).
         If False, returns only the boolean array. Default is False.
-    
+
     Returns
     -------
     bool or numpy.ndarray
@@ -488,13 +638,17 @@ def is_true_emitter(tab, wavedict, sig=3.0, n=1, return_lines=False):
     list of lists, optional
         If return_lines=True, returns a list where each element is a list of
         line names detected for that source.
-    
+
     Notes
     -----
     - Valid flags are empty strings ('') or 'na' (not available).
     - Lyman alpha ('LYALPHA') is explicitly excluded from the analysis.
     - For a single row input, returns a scalar boolean (or tuple with single-element list).
 
+    Example
+    -------
+    >>> is_true_emitter(tab, wavedict, sig=3.0, n=2, return_lines=True)
+    (array([True, False, ...]), [['CIII', 'OIII'], ...])
     """
     tv = np.zeros(len(tab['Z']) if isinstance(tab['Z'], (np.ndarray, aptb.Table.Column)) else 1).astype(int)
     trulist = [[] for r in tv]
@@ -514,42 +668,47 @@ def is_true_emitter(tab, wavedict, sig=3.0, n=1, return_lines=False):
 def find_closest_cluster_member(row, maxdist=5.0 * u.arcsec, return_all=False):
     """
     Find the closest cluster member(s) to a target galaxy based on normalized distance.
-    
+
     This function identifies surrounding galaxies most likely to have an impact on the
     fitting by looking at their properties and calculating a normalized distance metric
     (distance weighted by flux/magnitude).
-    
+
     Parameters
     ----------
     row : dict or astropy.table.Row
         Row containing target galaxy information with keys:
-        - 'CLUSTER': cluster name
-        - 'RA': right ascension in degrees
-        - 'DEC': declination in degrees
-        - 'z': redshift
+            - 'CLUSTER': cluster name
+            - 'RA': right ascension in degrees
+            - 'DEC': declination in degrees
+            - 'z': redshift
     maxdist : astropy.units.Quantity, optional
         Maximum angular distance to search for neighbors. Default is 5.0 arcsec.
     return_all : bool, optional
         If True, return all qualifying neighbors sorted by normalized distance.
         If False, return only the closest neighbor. Default is False.
-    
+
     Returns
     -------
     astropy.table.Table or astropy.table.Row or list
         If return_all=True: Table of all qualifying neighbors sorted by NORMDIST,
-                           or empty list if none found.
+            or empty list if none found.
         If return_all=False: Row of the closest neighbor, or None if none found.
-    
+
     Notes
     -----
     The normalized distance is calculated as: distance / sqrt(flux), where flux
     is derived from the F814W magnitude. This weights closer bright objects more
     heavily than distant faint objects.
-    
+
     Filtering criteria:
-    - Distance must be <= maxdist
-    - Redshift must be <= 2.9
-    - Redshift confidence (zconf) must be >= 2
+        - Distance must be <= maxdist
+        - Redshift must be <= 2.9
+        - Redshift confidence (zconf) must be >= 2
+
+    Example
+    -------
+    >>> find_closest_cluster_member(row, maxdist=5.0*u.arcsec, return_all=False)
+    <Row ...>
     """
     clus = row['CLUSTER']
     ortab = load_r21_catalogue(clus)
