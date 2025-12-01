@@ -16,6 +16,32 @@ import matplotlib.pyplot as plt
 from astropy.wcs import WCS
 from astropy.nddata import Cutout2D
 from astropy.coordinates import SkyCoord
+from . import spectroscopy as spectro
+from astropy.io import ascii
+
+def get_muse_psf(clus):
+    """
+    Get the MUSE PSF FWHM for a given cluster from the PSF data file provided in the data directory.
+    
+    Parameters
+    ----------
+    clus : str
+        Cluster name.
+    
+    Returns
+    -------
+    float
+        PSF FWHM in arcseconds.
+    """
+    base_dir = io.get_data_dir()
+    psf_file = Path(base_dir) / 'muse_data' / 'muse_fwhms.txt'
+    # Read the psf data table using astropy ascii
+    fwhmtb = np.loadtxt(psf_file, dtype={'names': ('CLUSTER', 'PSF_FWHM'), 'formats': ('U20', 'f4')}, skiprows=1)
+    clusind = np.where(fwhmtb['CLUSTER'] == clus)[0]
+    if len(clusind) == 0: # If the cluster is not found, raise an error
+        raise ValueError(f"Cluster {clus} not found in PSF data file.")
+    return fwhmtb['PSF_FWHM'][clusind[0]]
+
 
 def get_muse_cube_dir():
     """
@@ -37,8 +63,7 @@ def get_muse_cube_dir():
         return Path(cube_dir)
     
     # Otherwise construct from base data directory
-    from . import spectroscopy as spectro
-    base_dir = spectro.get_data_dir()
+    base_dir = io.get_data_dir()
     return Path(base_dir) / 'muse_data'
 
 
@@ -170,8 +195,8 @@ def show_segmentation_mask(row, ax_in, return_array = False, size = 'auto', down
     
     Returns
     -------
-    np.ndarray, optional
-        If return_array is True, returns the segmentation map array for the cutout region.
+    Cutout2D or None
+        If return_array is True, returns the Cutout2D object containing the segmentation map cutout.
         Otherwise, returns None.
     """
 
@@ -197,22 +222,23 @@ def show_segmentation_mask(row, ax_in, return_array = False, size = 'auto', down
             if len(xs) == 0 or len(ys) == 0:
                 print(f"Can't find segmentation region for object ID {id} in cluster {clus}.")
                 return
+            # Determine the minimum enclosing box
             x_min, x_max = np.min(xs), np.max(xs)
             y_min, y_max = np.min(ys), np.max(ys)
-            # Determine cutout size in arcseconds
-            cutout_size_x = (x_max - x_min + 1) * segmap_header['CDELT1'] * 3600 # arcsec
-            cutout_size_y = (y_max - y_min + 1) * segmap_header['CDELT2'] * 3600 # arcsec
-            # Make the cutout square and at least 2 arcsec
-            cutout_size = max(cutout_size_x, cutout_size_y, 2.0)
-            # generate the cutout
-            cutout = Cutout2D(segmap, position, cutout_size*u.arcsec, wcs=segmap_wcs, mode='trim')
-            segmap_cutout = cutout.data == idno
-        else: # Use the Cutout2D utility to make the cutout
-            cutout = Cutout2D(segmap, position, size*u.arcsec, wcs=segmap_wcs, mode='trim')
-            segmap_cutout = cutout.data == idno
+            # Convert pixel coordinates to world coordinates
+            world_min = segmap_wcs.pixel_to_world(x_min, y_min)
+            world_max = segmap_wcs.pixel_to_world(x_max, y_max)
+            # Calculate size in arcseconds
+            size_x = np.abs(world_max.ra.arcsec - world_min.ra.arcsec)
+            size_y = np.abs(world_max.dec.arcsec - world_min.dec.arcsec)
+            size = np.max([size_x, size_y, 2.0]) # Minimum size of 2 arcseconds
+            
+        # Use the Cutout2D utility to make the cutout
+        cutout = Cutout2D(segmap, position, size*u.arcsec, wcs=segmap_wcs, mode='trim')
+        cutout.data = cutout.data == idno
 
         # Overlay contour outlining the segmentation map on the provided axis
-        ax_in.contour(segmap_cutout, levels=[0.5], colors='red', linewidths=1.5)
+        ax_in.contour(cutout.data, levels=[0.5], colors='red', linewidths=1.5)
 
         if return_array:
-            return segmap_cutout
+            return cutout # returns the cutout object containing vital WCS info
