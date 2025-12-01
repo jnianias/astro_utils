@@ -48,7 +48,7 @@ None of the environment variables are strictly required. If not set, the package
 #### `R21_URL`
 - **Description**: Base URL for downloading R21 spectra and catalogs
 - **Default**: Will prompt interactively when needed
-- **Example**: `export R21_URL="https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_data_release/"`
+- **Example**: `export R21_URL="<your_R21_data_url>"`
 - **Note**: The package will automatically append the appropriate path (e.g., `A2744_final_catalog/spectra/`)
 
 #### `R21_SPECTRA_DIR`
@@ -78,7 +78,7 @@ None of the environment variables are strictly required. If not set, the package
 
 ```bash
 export ASTRO_DATA_DIR="/path/to/your/data"
-export R21_URL="https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_data_release/"
+export R21_URL="<your_R21_data_url>"
 ```
 
 ### Permanent (Add to Shell Configuration)
@@ -107,7 +107,7 @@ You can also use a `.env` file with the `python-dotenv` package:
 1. Create a `.env` file in your project directory:
 ```bash
 ASTRO_DATA_DIR=/path/to/your/data
-R21_URL=https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_data_release/
+R21_URL=<your_R21_data_url>
 ```
 
 2. Load it in your Python script:

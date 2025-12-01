@@ -2,6 +2,8 @@
 
 A Python package for astronomical spectroscopy analysis, originally designed for the MUSE catalogues presented in Richard et al. 2021 (R21): https://arxiv.org/abs/2009.09784
 
+Please note that much of the documentation is, at present, machine-generated.
+
 ## Features
 
 - Spectral line fitting with support for single and double-peaked profiles
@@ -46,10 +48,11 @@ Set the base data directory where your MUSE catalogs and spectra are stored:
 export R21_DATA_DIR="/path/to/your/data"
 ```
 
+
 Optionally, set the R21 data URL (you'll be prompted if not set):
 
 ```bash
-export R21_URL="https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_data_release/"
+export R21_URL="<your_R21_data_url>"
 ```
 
 ### Using a .env File
@@ -60,10 +63,10 @@ export R21_URL="https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_d
    ```
 
 2. Edit `.env` with your paths:
-   ```bash
-   ASTRO_DATA_DIR=/path/to/your/data
-   R21_URL=https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_data_release/
-   ```
+    ```bash
+    ASTRO_DATA_DIR=/path/to/your/data
+    R21_URL=<your_R21_data_url>
+    ```
 
 3. Load the environment in Python:
    ```python

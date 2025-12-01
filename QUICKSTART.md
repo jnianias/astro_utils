@@ -12,7 +12,7 @@ pip install -e .
 ```bash
 # One-time setup
 echo 'export ASTRO_DATA_DIR="/your/data/path"' >> ~/.bashrc
-echo 'export R21_URL="https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_data_release/"' >> ~/.bashrc
+echo 'export R21_URL="<your_R21_data_url>"' >> ~/.bashrc
 source ~/.bashrc
 
 # Install
@@ -23,7 +23,7 @@ pip install -e .
 ```bash
 # Run before each session
 export ASTRO_DATA_DIR="/your/data/path"
-export R21_URL="https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_data_release/"
+export R21_URL="<your_R21_data_url>"
 ```
 
 ## Environment Variables
