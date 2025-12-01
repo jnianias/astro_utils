@@ -1,7 +1,8 @@
 """
 Input/Output utilities module.
 
-This module is a placeholder for future I/O functionality.
+This module provides functions to manage data directories, load spectra from different sources,
+and handle environment variables for processing of MUSE spectra.
 """
 
 import os
@@ -14,11 +15,11 @@ def get_data_dir():
     """
     Get the base data directory from the ASTRO_DATA_DIR environment variable.
     If not set, prompts the user to provide the path.
-    
-    Returns:
-    --------
-        str
-            The base data directory path.
+
+    Returns
+    -------
+    str
+        The base data directory path.
     """
     
     data_dir = os.environ.get('ASTRO_DATA_DIR')
@@ -47,11 +48,11 @@ def get_spectra_dir():
     """
     Get the R21 spectra directory from the R21_SPECTRA_DIR environment variable.
     If not set, prompts the user to provide the path.
-    
-    Returns:
-    --------
-        str
-            The R21 spectra directory path.
+
+    Returns
+    -------
+    str
+        The R21 spectra directory path.
     """
     
     spectra_dir = os.environ.get('R21_SPECTRA_DIR')
@@ -82,11 +83,10 @@ def get_source_spectra_dir():
     Get the source spectra directory from the SOURCE_SPECTRA_DIR environment variable.
     If not set, prompts the user to provide the path.
 
-    
-    Returns:
-    --------
-        str
-            The source spectra directory path.
+    Returns
+    -------
+    str
+        The source spectra directory path.
     """
     
     source_dir = os.environ.get('SOURCE_SPECTRA_DIR')
@@ -116,16 +116,16 @@ def get_spectra_url():
     """
     Get the spectra base URL from the R21_URL environment variable.
     If not set, prompt the user to enter it interactively.
-    
-    Returns:
-    --------
-        str
-            The spectra base URL.
-    
-    Raises:
+
+    Returns
     -------
-        ValueError
-            If not set and user does not provide one.
+    str
+        The spectra base URL.
+
+    Raises
+    ------
+    ValueError
+        If not set and user does not provide one.
     """
     import os
     url = os.environ.get('R21_URL')
@@ -144,9 +144,9 @@ def get_spectra_url():
 def load_spec(clus, iden, idfrom, spec_source = 'R21', spectype = 'weight_skysub'):
     """
     Loads a spectrum from the specified source.
-    
-    Parameters:
-    -----------
+
+    Parameters
+    ----------
     clus : str
         Cluster name (e.g., 'A2744', 'MACS0416', etc.)
     iden : int
@@ -158,10 +158,10 @@ def load_spec(clus, iden, idfrom, spec_source = 'R21', spectype = 'weight_skysub
     spectype : str
         Type of spectrum to load (either 'weight_skysub' or '2fwhm', etc.)
 
-    Returns:
-    --------
-        astropy.table.Table or None
-            The loaded spectrum table, or None if loading failed.
+    Returns
+    -------
+    astropy.table.Table or None
+        The loaded spectrum table, or None if loading failed.
     """
     if spec_source == 'R21':
         return load_r21_spec(clus, iden, idfrom, spectype)
@@ -173,9 +173,9 @@ def load_spec(clus, iden, idfrom, spec_source = 'R21', spectype = 'weight_skysub
 def load_r21_spec(clus, iden, idfrom, spectype):
     """
     Loads a spectrum from the Richard et al. (2021) catalog.
-    
-    Parameters:
-    -----------
+
+    Parameters
+    ----------
     clus : str
         Cluster name (e.g., 'A2744', 'MACS0416', etc.)
     iden : int
@@ -185,10 +185,10 @@ def load_r21_spec(clus, iden, idfrom, spectype):
     spectype : str
         Type of spectrum to load
 
-    Returns:
-    --------
-        astropy.table.Table or None
-            The loaded spectrum table, or None if loading failed.
+    Returns
+    -------
+    astropy.table.Table or None
+        The loaded spectrum table, or None if loading failed.
     """
     # Generate the full identifier
     if iden[0].isdigit():
@@ -267,9 +267,9 @@ def load_r21_spec(clus, iden, idfrom, spectype):
 def load_aper_spec(clus, iden, idfrom, spectype = '2fwhm'):
     """
     Loads a spectrum from the aperture spectra files.
-    
-    Parameters:
-    -----------
+
+    Parameters
+    ----------
     clus : str
         Cluster name (e.g., 'A2744', 'MACS0416', etc.)
     iden : str
@@ -279,10 +279,10 @@ def load_aper_spec(clus, iden, idfrom, spectype = '2fwhm'):
     spectype : str
         Type of spectrum to load ('2fwhm', '1fwhm', etc.)
 
-    Returns:
-    --------
-        astropy.table.Table or None
-            The loaded spectrum table, or None if loading failed.
+    Returns
+    -------
+    astropy.table.Table or None
+        The loaded spectrum table, or None if loading failed.
     """
     # For aperture spectra, use iden directly (already in correct format)
     identifier = str(iden)
@@ -311,3 +311,45 @@ def load_aper_spec(clus, iden, idfrom, spectype = '2fwhm'):
         spectab = None
 
     return spectab
+
+def load_segmentation_map(clus, download_if_missing=False):
+    """
+    Load the R21 segmentation map for a given cluster.
+
+    Parameters
+    ----------
+    clus : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+    download_if_missing : bool, optional
+        If True, attempt to download the segmentation map if not found locally. Default is False.
+
+    Returns
+    -------
+    astropy.io.fits.HDUList or None
+        The segmentation map HDUList, or None if loading failed.
+    """
+    data_dir = get_data_dir()
+    segmap_path = os.path.join(data_dir, 'muse_data', f'{clus}', 'seg.fits')
+    
+    if not os.path.isfile(segmap_path):
+        print(f"Segmentation map file not found: {segmap_path}")
+
+        if not download_if_missing:
+            return None
+
+        # Attempt to download the segmentation map
+        print(f"Attempting to download segmentation map for {clus}...")
+        os.makedirs(os.path.dirname(segmap_path), exist_ok=True)
+        try:
+            os.system(f"wget --no-check-certificate {get_spectra_url()}{clus}_final_catalog/segmentation_maps/{clus}_segmentation.fits"
+                      + f" -O {segmap_path}")
+            print("Download complete.")
+        except Exception as e:
+            print(f"Error downloading segmentation map: {e}")
+            return None
+    
+    try:
+        return fits.open(segmap_path)
+    except Exception as e:
+        print(f"Error loading segmentation map: {e}")
+        return None

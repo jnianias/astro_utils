@@ -11,6 +11,10 @@ import os
 from pathlib import Path
 import astropy.units as u
 from mpdaf.obj import Cube
+from . import io
+import matplotlib.pyplot as plt
+from astropy.wcs import WCS
+from astropy.nddata import Cutout2D
 
 
 def get_muse_cube_dir():
@@ -142,3 +146,66 @@ def make_muse_img(row, size, lcenter, width, cont=None, verbose=True):
             return img_line
     else:
         return img_line
+
+def show_segmentation_map(row, ax_in, return_array = False, size = 'auto', download_if_missing=False):
+    """
+    Overlay the R21 segmentation map on a given matplotlib axis.
+    
+    Parameters
+    ----------
+    row : dict or astropy.table.Row
+        Row containing target information with keys:
+        - 'CLUSTER': cluster name
+        - 'RA': right ascension in degrees
+        - 'DEC': declination in degrees
+    ax_in : matplotlib.axes.Axes
+        Matplotlib axis to overlay the segmentation map on.
+    size : float or 'auto', optional
+        Size of the cutout in arcseconds. If 'auto', uses the smallest box enclosing the entire segmentation map,
+        down to a minimum of 2 arcseconds.
+        Default is 'auto'.
+    download_if_missing : bool, optional
+        If True, attempts to download the segmentation map if not found locally.
+        Default is False.
+    
+    Returns
+    -------
+    np.ndarray, optional
+        If return_array is True, returns the segmentation map array for the cutout region.
+        Otherwise, returns None.
+    """
+
+    position = (row['DEC'], row['RA']) # (dec, ra)
+    clus = row['CLUSTER'] 
+    id   = row['iden'] 
+    idno = int(''.join(filter(str.isdigit, id))) # Extract numeric part of id
+
+    # Load segmentation map HDUList with proper file handling
+    with io.load_segmentation_map(clus, download_if_missing=download_if_missing) as seg_hdul:
+        if seg_hdul is None:
+            print(f"Segmentation map for cluster {clus} could not be loaded.")
+            return None
+        
+        # Get the primary HDU
+        segmap = seg_hdul[0].data
+        segmap_header = seg_hdul[0].header
+        segmap_wcs = WCS(segmap_header)
+
+        # Determine size of cutout
+        if size == 'auto':
+            ys, xs = np.where(segmap == idno)
+            if len(xs) == 0 or len(ys) == 0:
+                print(f"Can't find segmentation map for object ID {id} in cluster {clus}.")
+                return
+            x_min, x_max = np.min(xs), np.max(xs)
+            y_min, y_max = np.min(ys), np.max(ys)
+            segmap_cutout = segmap[y_min:y_max+1, x_min:x_max+1]
+        else: # Use the Cutout2D utility to make the cutout
+            cutout = Cutout2D(segmap, position, size*u.arcsec, wcs=segmap_wcs, mode='trim')
+            segmap_cutout = cutout.data
+
+        # Overlay segmentation map on provided axis
+        ax_in.imshow(segmap_cutout, origin='lower', cmap='tab20', alpha=0.5)
+
+        if return_array:
+            return segmap_cutout
