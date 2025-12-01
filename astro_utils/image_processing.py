@@ -15,7 +15,7 @@ from . import io
 import matplotlib.pyplot as plt
 from astropy.wcs import WCS
 from astropy.nddata import Cutout2D
-
+from astropy.coordinates import SkyCoord
 
 def get_muse_cube_dir():
     """
@@ -147,7 +147,7 @@ def make_muse_img(row, size, lcenter, width, cont=None, verbose=True):
     else:
         return img_line
 
-def show_segmentation_map(row, ax_in, return_array = False, size = 'auto', download_if_missing=False):
+def show_segmentation_mask(row, ax_in, return_array = False, size = 'auto', download_if_missing=False):
     """
     Overlay the R21 segmentation map on a given matplotlib axis.
     
@@ -175,7 +175,7 @@ def show_segmentation_map(row, ax_in, return_array = False, size = 'auto', downl
         Otherwise, returns None.
     """
 
-    position = (row['DEC'], row['RA']) # (dec, ra)
+    position = SkyCoord(ra=row['RA'], dec=row['DEC'], unit='deg')
     clus = row['CLUSTER'] 
     id   = row['iden'] 
     idno = int(''.join(filter(str.isdigit, id))) # Extract numeric part of id
@@ -195,17 +195,24 @@ def show_segmentation_map(row, ax_in, return_array = False, size = 'auto', downl
         if size == 'auto':
             ys, xs = np.where(segmap == idno)
             if len(xs) == 0 or len(ys) == 0:
-                print(f"Can't find segmentation map for object ID {id} in cluster {clus}.")
+                print(f"Can't find segmentation region for object ID {id} in cluster {clus}.")
                 return
             x_min, x_max = np.min(xs), np.max(xs)
             y_min, y_max = np.min(ys), np.max(ys)
-            segmap_cutout = segmap[y_min:y_max+1, x_min:x_max+1]
+            # Determine cutout size in arcseconds
+            cutout_size_x = (x_max - x_min + 1) * segmap_header['CDELT1'] * 3600 # arcsec
+            cutout_size_y = (y_max - y_min + 1) * segmap_header['CDELT2'] * 3600 # arcsec
+            # Make the cutout square and at least 2 arcsec
+            cutout_size = max(cutout_size_x, cutout_size_y, 2.0)
+            # generate the cutout
+            cutout = Cutout2D(segmap, position, cutout_size*u.arcsec, wcs=segmap_wcs, mode='trim')
+            segmap_cutout = cutout.data == idno
         else: # Use the Cutout2D utility to make the cutout
             cutout = Cutout2D(segmap, position, size*u.arcsec, wcs=segmap_wcs, mode='trim')
-            segmap_cutout = cutout.data
+            segmap_cutout = cutout.data == idno
 
-        # Overlay segmentation map on provided axis
-        ax_in.imshow(segmap_cutout, origin='lower', cmap='tab20', alpha=0.5)
+        # Overlay contour outlining the segmentation map on the provided axis
+        ax_in.contour(segmap_cutout, levels=[0.5], colors='red', linewidths=1.5)
 
         if return_array:
             return segmap_cutout

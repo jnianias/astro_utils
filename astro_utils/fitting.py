@@ -24,11 +24,17 @@ c           = const.c  # speed of light in km/s
 
 def which_fit_method(linename):
     """
-    Determines the fitting method based on the line name.
-    If you provide the principal line of a doublet, it will return 'doublet',
-    but if you use a secondary line, it will warn you and return 'single'.
+    Determine the fitting method for a given line name.
 
-    linename: name of the line (needs to be in wavedict)
+    Parameters
+    ----------
+    linename : str
+        Name of the line (must be in wavedict).
+
+    Returns
+    -------
+    str
+        'doublet' if the line is a principal doublet, 'single' otherwise.
     """
     doublet_principals  = list(doubletdict.keys())
     doublet_secondaries = [doubletdict[key][1] for key in doublet_principals 
@@ -46,65 +52,32 @@ def which_fit_method(linename):
 from numpy.polynomial import Polynomial as nppoly
 
 def autocorr_length(wave, spec, yerr, max_lag=10, baseline_order=None):
-    """Estimate noise correlation length from spectral residuals.
-    
-    Designed for short astronomical spectra (30-100 pixels): estimates short-scale
-    correlations (typically 1-5 pixels) that could cause correlated noise peaks to
-    mimic emission lines.
-    
-    Returns the e-folding length τ where ACF(τ) = 1/e ≈ 0.368.
-    
-    Algorithm:
+    """
+    Estimate the noise correlation length from spectral residuals.
+
+    Parameters
     ----------
-    Optimized for short, noisy spectra where traditional ACF tail estimation is
-    unreliable. Uses a simplified two-stage approach:
-    
-    **Stage 1: Significance Test**
-        Tests if ACF(1) exceeds 3σ threshold based on statistical uncertainty
-        (~3/sqrt(n)). If not, returns τ=1 (no significant correlation).
-        Prevents estimating correlation from noise fluctuations.
-    
-    **Stage 2: Exponential Fit & Boundary Detection**
-        Fits exponential decay to first few lags (most reliable estimates).
-        Uses fixed threshold (0.05) for boundary detection - robust for
-        short spectra where ACF tail is too noisy for reliable estimation.
-        
-    Uses unbiased ACF estimator: divides by actual number of pairs at each lag
-    to avoid systematic negative bias at large lags.
-    
-    Philosophy: Simple and robust for short spectra. Conservative for detection
-    (require clear lag-1 correlation), but uses fixed thresholds to avoid
-    unreliable noise floor estimation from noisy ACF tails.
-    
-    Parameters:
-    -----------
-    wave : array
-        Wavelength array (used for baseline fitting)
-    spec : array  
-        Spectral residuals (observed - model) or flux values
-    yerr : array
-        Error estimates for each pixel (for χ²_red calculation)
-    max_lag : int
-        Maximum lag to search for correlations (default: 10)
-        For line detection, use ~5-10 pixels
-    baseline_order : int or None
-        Polynomial order for baseline removal before ACF
-        Use None (mean removal) for residuals, 0-2 for raw spectra
-    
-    Returns:
-    --------
+    wave : array-like
+        Wavelength array (used for baseline fitting).
+    spec : array-like
+        Spectral residuals (observed - model) or flux values.
+    yerr : array-like
+        Error estimates for each pixel (for chi-squared calculation).
+    max_lag : int, optional
+        Maximum lag to search for correlations (default: 10).
+    baseline_order : int or None, optional
+        Polynomial order for baseline removal before ACF. Use None for mean removal.
+
+    Returns
+    -------
     tau : float
-        Correlation length in pixels (>= 1.0)
-        Returns 1.0 if no significant correlation detected at lag 1
+        Correlation length in pixels (>= 1.0). Returns 1.0 if no significant correlation detected at lag 1.
     inflation_factor : float
-        Error inflation factor based on χ²_red (>= 1.0)
-        Accounts for systematic excess variance beyond formal errors
-    
-    Notes:
-    ------
-    For spectroscopic data, correlation at lag 1 (adjacent pixels) is expected
-    if any correlation exists. Higher lags without lag-1 correlation are 
-    physically unrealistic, so the lag-1 test is sufficient for detection.
+        Error inflation factor based on chi-squared (>= 1.0).
+
+    Notes
+    -----
+    Designed for short astronomical spectra (30-100 pixels). Returns the e-folding length tau where ACF(tau) = 1/e.
     """
     # 1. Baseline removal with diagnostics
     if baseline_order is not None:
@@ -270,20 +243,22 @@ def autocorr_length(wave, spec, yerr, max_lag=10, baseline_order=None):
         return float(max_lag), inflation_factor
 
 def gen_corr_noise(yerr, corr_len, size=None):
-    """Generate correlated noise using AR(1) process.
-    
-    For an AR(1) process with parameter phi, the ACF is:
-        ACF(k) = phi^k
-    
-    We want ACF(τ) = exp(-1) where τ is the correlation length (e-folding scale).
-    Therefore: phi^τ = exp(-1)  =>  phi = exp(-1/τ)
-    
-    Args:
-        yerr: Array of error values
-        corr_len: Correlation length τ in pixels (e-folding scale)
-        size: Optional output size (defaults to len(yerr))
-    Returns:
-        Correlated noise array with same shape as yerr/size
+    """
+    Generate correlated noise using an AR(1) process.
+
+    Parameters
+    ----------
+    yerr : array-like
+        Array of error values.
+    corr_len : float
+        Correlation length tau in pixels (e-folding scale).
+    size : int, optional
+        Output size (defaults to len(yerr)).
+
+    Returns
+    -------
+    noise : ndarray
+        Correlated noise array with the same shape as yerr/size.
     """
     if corr_len <= 1:
         return np.random.normal(scale=yerr, size=size)
@@ -309,65 +284,45 @@ def check_multiple_peaks(wave, residuals, err, fitted_peak_wave, fitted_amplitud
                          amplitude_ratio_threshold=0.5, width_ratio_range=(0.5, 2.0), 
                          detection_threshold=3.0, chi2_threshold=3.0):
     """
-    Check if there are other unexplained peaks in the residuals similar to the fitted line.
-    
-    This detects cases where multiple peaks of comparable strength exist, suggesting
-    the fitted line may not be unique or the spectrum is contaminated by complex 
-    structure (e.g., multiple emission lines, broad absorption features, etc.).
-    
-    Only performs peak search if reduced chi-square is high (poor fit), otherwise
-    returns immediately with no flag.
-    
-    Parameters:
-    -----------
-    wave : array
-        Wavelength array
-    residuals : array
-        Residuals after subtracting the fitted model (observed - model)
-    err : array
-        Error array (for significance calculation)
+    Check for additional unexplained peaks in the residuals similar to the fitted line.
+
+    Parameters
+    ----------
+    wave : array-like
+        Wavelength array.
+    residuals : array-like
+        Residuals after subtracting the fitted model (observed - model).
+    err : array-like
+        Error array (for significance calculation).
     fitted_peak_wave : float
-        Wavelength of the fitted peak
+        Wavelength of the fitted peak.
     fitted_amplitude : float
-        Amplitude (height) of the fitted peak
+        Amplitude (height) of the fitted peak.
     fitted_width : float
-        FWHM or sigma of the fitted peak (in same units as wave)
-    n_fit_params : int
-        Number of parameters in the fit (for reduced chi-square calculation)
-        (default: 3, e.g., amplitude, center, width)
-    min_separation : float
-        Minimum separation in units of fitted_width to consider peaks as distinct
-        (default: 3, i.e., peaks must be >3*FWHM apart)
-    amplitude_ratio_threshold : float
-        Flag if other peaks have amplitude > this fraction of fitted peak
-        (default: 0.5, i.e., flag if other peaks are >50% as strong)
-    width_ratio_range : tuple
-        Flag if other peaks have widths within this range of fitted width
-        (default: (0.5, 2.0), i.e., half to double the width)
-    detection_threshold : float
-        Minimum SNR for a peak in residuals to be considered significant
-        (default: 3.0 sigma)
-    chi2_threshold : float
-        Only search for peaks if reduced chi-square > this value
-        (default: 3.0, indicating significant unexplained structure)
-    
-    Returns:
-    --------
-    dict with keys:
-        'suspicious': bool - True if suspicious peaks found AND reduced chi2 > threshold
-        'n_comparable_peaks': int - Number of comparable peaks found
-        'peak_info': list of dicts - Info about each suspicious peak
-            Each dict contains: wavelength, amplitude, snr, width, 
-            amplitude_ratio, width_ratio, separation
-        'flag': str - Suggested flag ('m' for multiple peaks, or '')
-        'reduced_chi2': float - Calculated reduced chi-square of fit
-        'message': str - Human-readable explanation of result
-    
-    Example:
-    --------
-    >>> result = check_multiple_peaks(wave, residuals, err, 5007.0, 1e-17, 2.5)
-    >>> if result['suspicious']:
-    >>>     print(f"Found {result['n_comparable_peaks']} comparable peaks")
+        FWHM or sigma of the fitted peak (in same units as wave).
+    n_fit_params : int, optional
+        Number of parameters in the fit (default: 3).
+    min_separation : float, optional
+        Minimum separation in units of fitted_width to consider peaks as distinct (default: 3).
+    amplitude_ratio_threshold : float, optional
+        Minimum amplitude ratio to flag comparable peaks (default: 0.5).
+    width_ratio_range : tuple, optional
+        Range of width ratios to flag comparable peaks (default: (0.5, 2.0)).
+    detection_threshold : float, optional
+        Minimum SNR for a peak in residuals to be considered significant (default: 3.0).
+    chi2_threshold : float, optional
+        Only search for peaks if reduced chi-square > this value (default: 3.0).
+
+    Returns
+    -------
+    dict
+        Dictionary with keys:
+        - 'suspicious': bool
+        - 'n_comparable_peaks': int
+        - 'peak_info': list of dicts (wavelength, amplitude, snr, width, amplitude_ratio, width_ratio, separation)
+        - 'flag': str
+        - 'reduced_chi2': float
+        - 'message': str
     """
     from scipy.signal import find_peaks
     
@@ -479,13 +434,17 @@ def check_multiple_peaks(wave, residuals, err, fitted_peak_wave, fitted_amplitud
 
 def sigma_to_percentile(sigma):
     """
-    Convert sigma level to percentile for non-Gaussian uncertainties.
-    
-    Parameters:
-    sigma (float): Sigma level (e.g., 1, 2, 3 for 1σ, 2σ, 3σ)
-    
-    Returns:
-    float: Percentile value representing the confidence level
+    Convert a sigma level to a percentile for non-Gaussian uncertainties.
+
+    Parameters
+    ----------
+    sigma : float
+        Sigma level (e.g., 1, 2, 3 for 1σ, 2σ, 3σ).
+
+    Returns
+    -------
+    float
+        Percentile value representing the confidence level.
     """
     
     # Calculate the two-tailed percentile
@@ -499,12 +458,29 @@ def sigma_to_percentile(sigma):
 
 
 def avgfunc(poptl, errfunc, sig_clip = 7.0):
-        if errfunc == 'stddev':
-            _scs = sigma_clipped_stats(np.array(poptl), axis=0, maxiters=1, sigma=sig_clip)
-            return [_scs[0], _scs[2]]
-        else:
-            medpopt = np.nanmedian(poptl, axis=0)
-            return [medpopt, np.nanmedian(np.abs(poptl - medpopt), axis=0)]
+    """
+    Compute the average and error of fit parameters from Monte Carlo samples.
+
+    Parameters
+    ----------
+    poptl : array-like
+        List of parameter samples.
+    errfunc : str
+        Error estimation method: 'stddev' or 'mad'.
+    sig_clip : float, optional
+        Sigma clipping threshold for stddev (default: 7.0).
+
+    Returns
+    -------
+    list
+        [average, error] for each parameter.
+    """
+    if errfunc == 'stddev':
+        _scs = sigma_clipped_stats(np.array(poptl), axis=0, maxiters=1, sigma=sig_clip)
+        return [_scs[0], _scs[2]]
+    else:
+        medpopt = np.nanmedian(poptl, axis=0)
+        return [medpopt, np.nanmedian(np.abs(poptl - medpopt), axis=0)]
 
 def fit_mc(f, x, y, yerr, p0, bounds=None, niter=500, errfunc='mad',
            return_sample=False, chisq_thresh=np.inf, sig_clip=7.0,

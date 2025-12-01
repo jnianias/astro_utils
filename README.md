@@ -2,7 +2,7 @@
 
 A Python package for astronomical spectroscopy analysis, originally designed for the MUSE catalogues presented in Richard et al. 2021 (R21): https://arxiv.org/abs/2009.09784
 
-Please note that much of the documentation is, at present, machine-generated.
+Please note that much of the documentation is, at present, machine-generated. Contributions and corrections are welcome.
 
 ## Features
 

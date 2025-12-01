@@ -134,7 +134,7 @@ def get_spectra_url():
     try:
         url = input("R21 spectra base URL not set. Please enter the URL: ").strip()
         if url:
-            os.environ['R21_URL'] = url
+            os.environ['R21_URL'] = url # Set for this session
             return url
         else:
             raise ValueError("R21 spectra base URL is required but not provided.")
@@ -330,7 +330,21 @@ def load_segmentation_map(clus, download_if_missing=False):
     """
     data_dir = get_data_dir()
     segmap_path = os.path.join(data_dir, 'muse_data', f'{clus}', 'seg.fits')
+
     
+    
+    # === DEBUG BLOCK: File existence and path checks ===
+    print("[DEBUG] segmap_path repr:", repr(segmap_path))
+    print("[DEBUG] os.path.exists:", os.path.exists(segmap_path))
+    print("[DEBUG] os.path.isfile:", os.path.isfile(segmap_path))
+    print("[DEBUG] os.access (read):", os.access(segmap_path, os.R_OK))
+    try:
+        with open(segmap_path, 'rb') as f:
+            print("[DEBUG] File opened successfully.")
+    except Exception as e:
+        print(f"[DEBUG] Exception opening file: {e}")
+    # === END DEBUG BLOCK ===
+
     if not os.path.isfile(segmap_path):
         print(f"Segmentation map file not found: {segmap_path}")
 
