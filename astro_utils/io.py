@@ -7,115 +7,115 @@ and handle environment variables for processing of MUSE spectra.
 
 import os
 import glob
+import re
 import numpy as np
 from astropy.io import fits
 import astropy.table as aptb
+from pathlib import Path
+import requests
+from bs4 import BeautifulSoup
 
-def get_data_dir():
+def get_r21_cat_url():
     """
-    Get the base data directory from the ASTRO_DATA_DIR environment variable.
-    If not set, prompts the user to provide the path.
-
-    Returns
-    -------
-    str
-        The base data directory path.
-    """
-    
-    data_dir = os.environ.get('ASTRO_DATA_DIR')
-    if data_dir:
-        return data_dir
-    
-    # Prompt user for the path
-    print("\nASTRO_DATA_DIR environment variable not set.")
-    print("Please provide the path to your astronomy data directory.")
-    
-    try:
-        user_path = input("Enter data directory path: ").strip()
-        if user_path:
-            # Set the environment variable for this session
-            os.environ['ASTRO_DATA_DIR'] = user_path
-            print(f"Using: {user_path}")
-            print(f"To make this permanent, add to your ~/.bashrc:")
-            print(f"  export ASTRO_DATA_DIR={user_path}")
-            return user_path
-        else:
-            raise ValueError("ASTRO_DATA_DIR is required but not provided.")
-    except (EOFError, KeyboardInterrupt):
-        raise ValueError("\nASTRO_DATA_DIR is required but not provided.")
-
-def get_spectra_dir():
-    """
-    Get the R21 spectra directory from the R21_SPECTRA_DIR environment variable.
-    If not set, prompts the user to provide the path.
+    Get the base URL for the R21 catalogs from the R21_CAT_URL environment variable.
+    This must be set by the user to point to the correct server location.
 
     Returns
     -------
     str
-        The R21 spectra directory path.
+        Base URL for the R21 catalog.
     """
+    base_url = os.environ.get('R21_CAT_URL')
+    if not base_url:
+        # Prompt user for the URL
+        print("\nR21_CAT_URL environment variable not set.")
+        print("Please provide the base URL for the R21 catalog (e.g., 'https://example.com/r21_catalogs/').")
+        try:
+            user_url = input("Enter R21 catalog base URL: ").strip()
+            if user_url:
+                os.environ['R21_CAT_URL'] = user_url
+                print(f"Using: {user_url}")
+                print(f"To make this permanent, add to your ~/.bashrc:")
+                print(f"  export R21_CAT_URL={user_url}")
+                return user_url
+            else:
+                raise ValueError("R21_CAT_URL is required but not provided.")
+        except EOFError:
+            raise ValueError("R21_CAT_URL is required but not provided.")
+    return os.environ['R21_CAT_URL']
     
-    spectra_dir = os.environ.get('R21_SPECTRA_DIR')
-    if spectra_dir:
-        return spectra_dir
-    
-    # Prompt user for the path
-    print("\nR21_SPECTRA_DIR environment variable not set.")
-    print("Please provide the path to the R21 spectra directory.")
-    print("(This should contain subdirectories for each cluster, e.g., A2744/, MACS0416/, etc.)")
-    
-    try:
-        user_path = input("Enter R21 spectra directory path: ").strip()
-        if user_path:
-            # Set the environment variable for this session
-            os.environ['R21_SPECTRA_DIR'] = user_path
-            print(f"Using: {user_path}")
-            print(f"To make this permanent, add to your ~/.bashrc:")
-            print(f"  export R21_SPECTRA_DIR={user_path}")
-            return user_path
-        else:
-            raise ValueError("R21_SPECTRA_DIR is required but not provided.")
-    except (EOFError, KeyboardInterrupt):
-        raise ValueError("\nR21_SPECTRA_DIR is required but not provided.")
+def download_r21_catalogue(cluster, dest_dir=None):
+    """
+    Download the R21 lens catalog from the server, with special case handling for the Bullet cluster.
 
-def get_source_spectra_dir():
-    """
-    Get the source spectra directory from the SOURCE_SPECTRA_DIR environment variable.
-    If not set, prompts the user to provide the path.
+    Parameters
+    ----------
+    cluster : str
+        Name of the cluster.
+    dest_dir : str or Path, optional
+        Destination directory for the downloaded file. If None, uses the default catalog directory.
 
     Returns
     -------
-    str
-        The source spectra directory path.
+    str or None
+        Path to the downloaded FITS file, or None if not found.
+
+    Example
+    -------
+    >>> download_r21_catalogue('A2744')
+    '/path/to/catalog/A2744_v1.1.fits'
     """
-    
-    source_dir = os.environ.get('SOURCE_SPECTRA_DIR')
-    if source_dir:
-        return source_dir
-    
-    # Prompt user for the path
-    print("\nSOURCE_SPECTRA_DIR environment variable not set.")
-    print("Please provide the path to the source spectra directory.")
-    print("(This should contain subdirectories for each cluster with individual source spectra)")
-    
-    try:
-        user_path = input("Enter source spectra directory path: ").strip()
-        if user_path:
-            # Set the environment variable for this session
-            os.environ['SOURCE_SPECTRA_DIR'] = user_path
-            print(f"Using: {user_path}")
-            print(f"To make this permanent, add to your ~/.bashrc:")
-            print(f"  export SOURCE_SPECTRA_DIR={user_path}")
-            return user_path
-        else:
-            raise ValueError("SOURCE_SPECTRA_DIR is required but not provided.")
-    except (EOFError, KeyboardInterrupt):
-        raise ValueError("\nSOURCE_SPECTRA_DIR is required but not provided.")
+
+    # Use provided destination directory or get from configuration
+    if dest_dir is None:
+        dest_dir = get_catalog_dir()
+    else:
+        dest_dir = Path(dest_dir)
+
+    # Ensure destination directory exists
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # Handle the special case for Bullet cluster
+    if cluster.upper() == 'BULLET':
+        server_cluster_name = 'Bullet'  # Lowercase on server
+    else:
+        server_cluster_name = cluster   # Normal case on server
+
+    # Use the module-level constant for the base URL
+    base_url = get_r21_cat_url()
+    print(f"Scraping directory listing: {base_url}")
+    response = requests.get(base_url)
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    # Find the latest versioned FITS file
+    pattern = re.compile(rf"{cluster.lower()}_v\d+\.\d+\.fits", re.IGNORECASE)
+    fits_file = None
+    for link in soup.find_all("a"):
+        href = link.get("href")
+        if href and pattern.fullmatch(href.lower()):
+            fits_file = href
+            print(f"Found catalogue file: {fits_file}")
+            break
+
+    if not fits_file:
+        print("No matching FITS file found in directory listing.")
+        return None
+
+    # Download the file
+    file_url = base_url + fits_file
+    print(f"Downloading {file_url} ...")
+    file_response = requests.get(file_url)
+    dest_path = dest_dir / fits_file
+    with open(dest_path, "wb") as f:
+        f.write(file_response.content)
+    print(f"Download complete: {dest_path}")
+
+    return str(dest_path)
 
 def get_spectra_url():
     """
-    Get the spectra base URL from the R21_URL environment variable.
-    If not set, prompt the user to enter it interactively.
+    Get the spectra base URL from the R21_URL environment variable. If not set, prompt the user 
+    to enter it interactively. Note that this URL is different from the catalog URL.
 
     Returns
     -------
@@ -128,19 +128,231 @@ def get_spectra_url():
         If not set and user does not provide one.
     """
     import os
-    url = os.environ.get('R21_URL')
+    url = os.environ.get('R21_SPEC_URL')
     if url:
         return url
     try:
         url = input("R21 spectra base URL not set. Please enter the URL: ").strip()
         if url:
-            os.environ['R21_URL'] = url # Set for this session
+            os.environ['R21_SPEC_URL'] = url # Set for this session
             return url
         else:
             raise ValueError("R21 spectra base URL is required but not provided.")
     except Exception:
         raise ValueError("R21 spectra base URL is required but not provided.")
+
+# Directory management functions
+
+def get_data_dir():
+    """
+    Get the base data directory from the MUSE_DATA_DIR environment variable.
+    If not set, prompts the user to provide the path.
+
+    Returns
+    -------
+    str
+        The base data directory path.
+    """
     
+    data_dir = os.environ.get('MUSE_DATA_DIR')
+    if data_dir:
+        return Path(data_dir)
+
+    # Prompt user for the path
+    print("\nMUSE_DATA_DIR environment variable not set.")
+    print("Please provide the path to your astronomy data directory.")
+
+    try:
+        user_path = input("Enter data directory path: ").strip()
+        if user_path:
+            # Set the environment variable for this session
+            os.environ['MUSE_DATA_DIR'] = user_path
+            print(f"Using: {user_path}")
+            print(f"To make this permanent, add to your ~/.bashrc:")
+            print(f"  export MUSE_DATA_DIR={user_path}")
+            return Path(user_path)
+        else:
+            raise ValueError("MUSE_DATA_DIR is required but not provided.")
+    except (EOFError, KeyboardInterrupt):
+        raise ValueError("\nMUSE_DATA_DIR is required but not provided.")
+
+def get_R21_catalog_dir(cluster):
+    """
+    Get the directory where the R21 catalogues are stored for a given cluster.
+
+    Parameters
+    ----------
+    cluster : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+
+    Returns
+    -------
+    str
+        The directory path where the catalogues for the specified cluster are stored.
+    """
+    data_dir = get_data_dir()
+    catalog_dir = data_dir / cluster.upper() / 'catalogs' / 'R21'
+    if not catalog_dir.exists(): # Raise an error if the directory does not exist (the user should have created it)
+        raise FileNotFoundError(f"Catalog directory does not exist: {catalog_dir}")
+    return catalog_dir
+
+def get_fit_catalog_dir(cluster):
+    """
+    Get the directory where the user-generated fit catalogs are stored for a given cluster.
+
+    Parameters
+    ----------
+    cluster : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+
+    Returns
+    -------
+    str
+        The directory path where the catalogues for the specified cluster are stored.
+    """
+    data_dir = get_data_dir()
+    catalog_dir = data_dir / cluster.upper() / 'catalogs' / 'fit_results'
+    if not catalog_dir.exists(): # Raise an error if the directory does not exist (the user should have created it)
+        raise FileNotFoundError(f"Catalog directory does not exist: {catalog_dir}")
+    return catalog_dir
+
+def get_R21_spectra_dir(cluster):
+    """
+    Get the directory where the R21 spectra are stored for a given cluster.
+
+    Parameters
+    ----------
+    cluster : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+
+    Returns
+    -------
+    str
+        The directory path where the spectra for the specified cluster are stored.
+    """
+    data_dir = get_data_dir()
+    spectra_dir = data_dir / cluster.upper() / 'spectra' / 'R21'
+    if not spectra_dir.exists(): # Raise an error if the directory does not exist (the user should have created it)
+        raise FileNotFoundError(f"Spectra directory does not exist: {spectra_dir}")
+    return spectra_dir
+
+def get_aper_spectra_dir(cluster):
+    """
+    Get the directory where the aperture spectra are stored for a given cluster.
+
+    Parameters
+    ----------
+    cluster : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+
+    Returns
+    -------
+    str
+        The directory path where the aperture spectra for the specified cluster are stored.
+    """
+    data_dir = get_data_dir()
+    spectra_dir = data_dir / cluster.upper() / 'spectra' / 'aper'
+    if not spectra_dir.exists(): # Raise an error if the directory does not exist (the user should have created it)
+        raise FileNotFoundError(f"Aperture spectra directory does not exist: {spectra_dir}")
+    return spectra_dir
+
+def get_misc_dir(cluster):
+    """
+    Get the directory where miscellaneous data files are stored for a given cluster.
+
+    Parameters
+    ----------
+    cluster : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+
+    Returns
+    -------
+    str
+        The directory path where miscellaneous data files for the specified cluster are stored.
+    """
+    data_dir = get_data_dir()
+    misc_dir = data_dir / cluster.upper() / 'misc'
+    if not misc_dir.exists(): # Raise an error if the directory does not exist (the user should have created it)
+        raise FileNotFoundError(f"Miscellaneous data directory does not exist: {misc_dir}")
+    return misc_dir
+
+def get_muse_cube_dir(cluster):
+    """
+    Get the directory where the MUSE cubes are stored for a given cluster.
+
+    Parameters
+    ----------
+    cluster : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+
+    Returns
+    -------
+    str
+        The directory path where the MUSE cubes for the specified cluster are stored.
+    """
+    data_dir = get_data_dir()
+    cube_dir = data_dir / cluster.upper() / 'cube'
+    if not cube_dir.exists(): # Raise an error if the directory does not exist (the user should have created it)
+        raise FileNotFoundError(f"MUSE cube directory does not exist: {cube_dir}")
+    return cube_dir
+
+# Data loading functions
+
+def load_r21_catalogue(cluster, type='source'):
+    """
+    Load the R21 lensing catalog for a given cluster from local cache, or download if not present.
+
+    Parameters
+    ----------
+    cluster : str
+        Name of the cluster.
+    type : str
+        Type of catalog to load ('source' or 'line').
+
+    Returns
+    -------
+    astropy.table.Table
+        The R21 lensing catalog as an Astropy Table.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the catalog cannot be found or downloaded.
+    """
+    # Define the path to the local cache directory
+    cache_dir = get_R21_catalog_dir(cluster)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    fpattern = f"{cluster}_v?.?.fits" if type == 'source' else f"{cluster}_v?.?_lines.fits"
+
+    # Local file path
+    local_path = cache_dir.glob(fpattern)
+    local_path = list(local_path)
+
+    # If not found locally, attempt to download
+    if len(local_path) == 0:
+        print(f"R21 catalog for {cluster} not found locally. Attempting to download...")
+        success = download_r21_catalogue(cluster)
+        if not success:
+            raise FileNotFoundError(f"R21 catalog for {cluster} could not be downloaded.")
+        
+    # Check again for the local file after download attempt
+    local_path = cache_dir.glob(fpattern)
+    local_path = list(local_path)
+    if len(local_path) == 0:
+        raise FileNotFoundError(f"R21 catalog for {cluster} still not found after download attempt.")
+    elif len(local_path) > 1:
+        print(f"Multiple versions of R21 catalog found for {cluster}. Using the first one.")
+
+    local_path = local_path[0]  # Use the first match if multiple found
+    
+    # Load and return the catalog as an astropy table
+    try:
+        r21_table = aptb.Table(fits.open(local_path)[1].data)
+        return r21_table
+    except Exception as e:
+        raise FileNotFoundError(f"Failed to load R21 catalog for {cluster}: {e}")
+
 def load_spec(clus, iden, idfrom, spec_source = 'R21', spectype = 'weight_skysub'):
     """
     Loads a spectrum from the specified source.
@@ -181,7 +393,7 @@ def load_r21_spec(clus, iden, idfrom, spectype):
     iden : int
         Identifier number of the object (e.g., 1234)
     idfrom : str
-        Prefix letter of the identifier (e.g., 'E' for E1234)
+        Prefix letter of the identifier (e.g., 'X' for X1234)
     spectype : str
         Type of spectrum to load
 
@@ -201,9 +413,8 @@ def load_r21_spec(clus, iden, idfrom, spectype):
     print(f"Loading R21 spectrum for {clus} object {identifier}...")
 
     # Get the spectra directory and construct the full path
-    spectra_dir = get_spectra_dir()
-    cluster_dir = os.path.join(spectra_dir, clus.upper())
-    
+    cluster_dir = get_R21_spectra_dir(clus)
+
     # Locate the file
     locfile = glob.glob(f"{cluster_dir}/spec_{identifier}_{spectype}.fits")
     if len(locfile) == 0: # If the file is not found, attempt to download it
@@ -285,16 +496,15 @@ def load_aper_spec(clus, iden, idfrom, spectype = '2fwhm'):
         The loaded spectrum table, or None if loading failed.
     """
     # For aperture spectra, use iden directly (already in correct format)
-    identifier = str(iden)
+    identifier = iden
 
     print(f"Loading aperture spectrum for {clus} object {identifier}...")
 
     # Get the source spectra directory and construct the full path
-    source_dir = get_source_spectra_dir()
-    cluster_dir = os.path.join(source_dir, clus.upper())
+    cluster_dir = get_aper_spectra_dir(clus)
     
     # Locate the file
-    locfile = glob.glob(f"{cluster_dir}/id{identifier}_{spectype}_spec.fits")
+    locfile = glob.glob(f"{cluster_dir}/{identifier}_{spectype}.fits")
     if len(locfile) == 0:
         print(f"File not found!")
         return None
@@ -328,22 +538,7 @@ def load_segmentation_map(clus, download_if_missing=False):
     astropy.io.fits.HDUList or None
         The segmentation map HDUList, or None if loading failed.
     """
-    data_dir = get_data_dir()
-    segmap_path = os.path.join(data_dir, 'muse_data', f'{clus}', 'seg.fits')
-
-    
-    
-    # === DEBUG BLOCK: File existence and path checks ===
-    print("[DEBUG] segmap_path repr:", repr(segmap_path))
-    print("[DEBUG] os.path.exists:", os.path.exists(segmap_path))
-    print("[DEBUG] os.path.isfile:", os.path.isfile(segmap_path))
-    print("[DEBUG] os.access (read):", os.access(segmap_path, os.R_OK))
-    try:
-        with open(segmap_path, 'rb') as f:
-            print("[DEBUG] File opened successfully.")
-    except Exception as e:
-        print(f"[DEBUG] Exception opening file: {e}")
-    # === END DEBUG BLOCK ===
+    segmap_path = get_misc_dir(clus) / 'seg.fits'
 
     if not os.path.isfile(segmap_path):
         print(f"Segmentation map file not found: {segmap_path}")

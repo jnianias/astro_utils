@@ -29,12 +29,24 @@ def which_fit_method(linename):
     Parameters
     ----------
     linename : str
-        Name of the line (must be in wavedict).
+        Name of the spectral line (must be present in wavedict).
 
     Returns
     -------
     str
         'doublet' if the line is a principal doublet, 'single' otherwise.
+
+    Notes
+    -----
+    - Principal doublet lines are defined in doubletdict.
+    - Secondary doublet lines will trigger a warning and return 'single'.
+
+    Examples
+    --------
+    >>> which_fit_method('CIV')
+    'doublet'
+    >>> which_fit_method('LYALPHA')
+    'single'
     """
     doublet_principals  = list(doubletdict.keys())
     doublet_secondaries = [doubletdict[key][1] for key in doublet_principals 
@@ -53,7 +65,7 @@ from numpy.polynomial import Polynomial as nppoly
 
 def autocorr_length(wave, spec, yerr, max_lag=10, baseline_order=None):
     """
-    Estimate the noise correlation length from spectral residuals.
+    Estimate the noise correlation length from spectral residuals using autocorrelation analysis.
 
     Parameters
     ----------
@@ -77,7 +89,14 @@ def autocorr_length(wave, spec, yerr, max_lag=10, baseline_order=None):
 
     Notes
     -----
-    Designed for short astronomical spectra (30-100 pixels). Returns the e-folding length tau where ACF(tau) = 1/e.
+    - Designed for short astronomical spectra (30-100 pixels).
+    - Returns the e-folding length tau where ACF(tau) = 1/e.
+    - Uses robust median-based diagnostics for error inflation.
+
+    Examples
+    --------
+    >>> tau, inflation = autocorr_length(wave, spec, yerr)
+    >>> print(f"Correlation length: {tau}, Error inflation: {inflation}")
     """
     # 1. Baseline removal with diagnostics
     if baseline_order is not None:
@@ -244,7 +263,7 @@ def autocorr_length(wave, spec, yerr, max_lag=10, baseline_order=None):
 
 def gen_corr_noise(yerr, corr_len, size=None):
     """
-    Generate correlated noise using an AR(1) process.
+    Generate correlated noise using an AR(1) process for Monte Carlo error estimation.
 
     Parameters
     ----------
@@ -259,6 +278,15 @@ def gen_corr_noise(yerr, corr_len, size=None):
     -------
     noise : ndarray
         Correlated noise array with the same shape as yerr/size.
+
+    Notes
+    -----
+    - For corr_len <= 1, returns uncorrelated Gaussian noise.
+    - For corr_len > 1, uses AR(1) process: noise[i] = phi * noise[i-1] + sqrt(1-phi^2) * epsilon[i], phi = exp(-1/tau).
+
+    Examples
+    --------
+    >>> noise = gen_corr_noise(yerr, corr_len=5)
     """
     if corr_len <= 1:
         return np.random.normal(scale=yerr, size=size)
@@ -317,12 +345,22 @@ def check_multiple_peaks(wave, residuals, err, fitted_peak_wave, fitted_amplitud
     -------
     dict
         Dictionary with keys:
-        - 'suspicious': bool
-        - 'n_comparable_peaks': int
-        - 'peak_info': list of dicts (wavelength, amplitude, snr, width, amplitude_ratio, width_ratio, separation)
-        - 'flag': str
-        - 'reduced_chi2': float
-        - 'message': str
+            - 'suspicious': bool
+            - 'n_comparable_peaks': int
+            - 'peak_info': list of dicts (wavelength, amplitude, snr, width, amplitude_ratio, width_ratio, separation)
+            - 'flag': str
+            - 'reduced_chi2': float
+            - 'message': str
+
+    Notes
+    -----
+    - Flags additional peaks in residuals that may indicate poor fit or blended lines.
+    - Uses SNR and amplitude/width criteria to filter peaks.
+
+    Examples
+    --------
+    >>> result = check_multiple_peaks(wave, residuals, err, 5000, 10, 3)
+    >>> print(result['n_comparable_peaks'])
     """
     from scipy.signal import find_peaks
     
@@ -445,6 +483,18 @@ def sigma_to_percentile(sigma):
     -------
     float
         Percentile value representing the confidence level.
+
+    Notes
+    -----
+    - Uses the cumulative distribution function (CDF) of the normal distribution.
+    - Returns the two-tailed percentile.
+
+    Examples
+    --------
+    >>> sigma_to_percentile(1)
+    68.27
+    >>> sigma_to_percentile(2)
+    95.45
     """
     
     # Calculate the two-tailed percentile
@@ -474,6 +524,18 @@ def avgfunc(poptl, errfunc, sig_clip = 7.0):
     -------
     list
         [average, error] for each parameter.
+
+    Notes
+    -----
+    - Uses sigma-clipped statistics for 'stddev'.
+    - Uses median absolute deviation for 'mad'.
+
+    Examples
+    --------
+    >>> avgfunc(samples, 'stddev')
+    [mean, stddev]
+    >>> avgfunc(samples, 'mad')
+    [median, mad]
     """
     if errfunc == 'stddev':
         _scs = sigma_clipped_stats(np.array(poptl), axis=0, maxiters=1, sigma=sig_clip)
@@ -485,57 +547,71 @@ def avgfunc(poptl, errfunc, sig_clip = 7.0):
 def fit_mc(f, x, y, yerr, p0, bounds=None, niter=500, errfunc='mad',
            return_sample=False, chisq_thresh=np.inf, sig_clip=7.0,
            autocorrelation=False, max_lag=10, baseline_order=0, max_nfev=5000):
-    """Monte Carlo fitting with correlated noise handling for spectroscopy.
-    
+    """
+    Monte Carlo fitting with correlated noise handling for spectroscopy.
+
     Fits a model to data and estimates parameter uncertainties via Monte Carlo
     resampling. Can account for correlated noise in residuals to avoid 
     underestimating errors when noise correlation mimics emission line structure.
-    
-    Parameters:
-    -----------
+
+    Parameters
+    ----------
     f : callable
         Model function to fit: f(x, *params)
-    x : array
+    x : array-like
         Independent variable (e.g., wavelength)
-    y : array
+    y : array-like
         Dependent variable (e.g., flux)
-    yerr : array
+    yerr : array-like
         Uncertainties in y
-    p0 : array
+    p0 : array-like
         Initial guess for parameters
     bounds : tuple of arrays, optional
         Lower and upper bounds for parameters
-    niter : int
+    niter : int, optional
         Number of Monte Carlo iterations (default: 500)
-    errfunc : str
+    errfunc : str, optional
         Error estimation method: 'mad' or 'stddev' (default: 'mad')
-    return_sample : bool
-        Return full MC sample in addition to mean/error (default: False)
-    chisq_thresh : float
+    return_sample : bool, optional
+        If True, return full MC sample in addition to mean/error (default: False)
+    chisq_thresh : float, optional
         Chi-square threshold to filter bad fits (default: np.inf, no filter)
-    sig_clip : float
+    sig_clip : float, optional
         Sigma clipping threshold for stddev (default: 7.0)
-    autocorrelation : bool or int
-        - False: assume uncorrelated noise (default)
-        - True: estimate correlation length from fit residuals
-        - int: use fixed correlation length in pixels
+    autocorrelation : bool or int, optional
+        False: assume uncorrelated noise (default)
+        True: estimate correlation length from fit residuals
+        int: use fixed correlation length in pixels
         For spectroscopy, use max_lag=5-10 to focus on line-scale correlations
-    max_lag : int
+    max_lag : int, optional
         Maximum lag for ACF estimation (default: 10 pixels)
         Relevant for detecting spurious lines from correlated noise
-    baseline_order : int
+    baseline_order : int, optional
         Polynomial order for baseline removal in ACF (default: 0)
         Use 0 for residuals, 1-2 for raw spectra with trends
-    max_nfev : int
+    max_nfev : int, optional
         Max function evaluations per fit (default: 5000)
-    
-    Returns:
+
+    Returns
+    -------
+    params : array-like
+        Best-fit parameters (mean or median of MC sample)
+    errors : array-like
+        Parameter uncertainties (stddev or MAD of MC sample)
+    sample : array-like, optional
+        Returned only if return_sample=True; shape (niter, nparams)
+
+    Notes
+    -----
+    - If return_sample is True, returns ([params, errors], sample)
+    - If return_sample is False, returns [params, errors]
+
+    Examples
     --------
-    If return_sample=False:
-        [params, errors] : list of arrays
-    If return_sample=True:
-        ([params, errors], sample) : tuple
-            where sample is (niter, nparams) array of all fitted parameters
+    >>> fit_mc(model, x, y, yerr, p0)
+    [params, errors]
+    >>> fit_mc(model, x, y, yerr, p0, return_sample=True)
+    ([params, errors], sample)
     """
 
     try:
@@ -624,11 +700,35 @@ class BootstrapParams(TypedDict, total=False):
 
 def prep_inputs(initial_guesses, bounds, linename, z_lya):
     """
-    Prepares and validates input parameters for fitting routines.
-    initial_guesses: dictionary of initial guesses of parameters (LPEAK is required, others optional)
-    bounds: dictionary of parameter bounds
-    linename: name of the line (needs to be in wavedict)
-    z_lya: redshift of Lyman-alpha line (used as sanity check for LPEAK)
+    Prepare and validate input parameters for fitting routines.
+
+    Parameters
+    ----------
+    initial_guesses : dict
+        Dictionary of initial guesses for parameters (LPEAK is required, others optional).
+    bounds : dict
+        Dictionary of parameter bounds.
+    linename : str
+        Name of the line (must be present in wavedict).
+    z_lya : float
+        Redshift of Lyman-alpha line (used as sanity check for LPEAK).
+
+    Returns
+    -------
+    initial_guesses : dict
+        Validated initial guesses for parameters.
+    bounds : dict
+        Validated bounds for parameters.
+
+    Notes
+    -----
+    - Resets LPEAK if initial guess is >500 km/s from expected value.
+    - Adjusts initial guesses to be within bounds if necessary.
+
+    Examples
+    --------
+    >>> prep_inputs({'LPEAK': 1216}, {'LPEAK': (1200, 1230)}, 'LYALPHA', 2.0)
+    ({'LPEAK': 1216}, {'LPEAK': (1200, 1230)})
     """
     # If LPEAK is not provided, raise error
     if 'LPEAK' not in initial_guesses:
@@ -671,7 +771,33 @@ def prep_inputs(initial_guesses, bounds, linename, z_lya):
 
 
 def check_inputs(p0, bounds):
-    """Ensure initial guesses are within bounds and not NaN."""
+    """
+    Ensure initial guesses are within bounds and not NaN.
+
+    Parameters
+    ----------
+    p0 : list or array-like
+        Initial guesses for parameters.
+    bounds : tuple of lists or arrays
+        Lower and upper bounds for each parameter.
+
+    Returns
+    -------
+    p0_checked : list
+        Initial guesses adjusted to be within bounds and not NaN.
+    bounds : tuple
+        Bounds for each parameter (unchanged).
+
+    Notes
+    -----
+    - NaN values are replaced by the midpoint of bounds.
+    - Out-of-bounds values are adjusted to the midpoint or slightly inside bounds.
+
+    Examples
+    --------
+    >>> check_inputs([np.nan, 5], ([0, 0], [10, 10]))
+    ([5.0, 5], ([0, 0], [10, 10]))
+    """
     p0_checked = []
     for i, val in enumerate(p0):
         lower, upper = bounds[0][i], bounds[1][i]
@@ -709,21 +835,46 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
              continuum_buffer = 25., plot_result = True, ax_in = None,
              bootstrap_params: Optional[BootstrapParams] = None):
     """
-    Fits a single or double gaussian profile to a line (plus its doublet partner if it has one).
-    If the line is Lyman alpha, returns the result of a more complex fitting procedure.
+    Fit a single or double Gaussian profile to a spectral line (plus its doublet partner if present).
+    If the line is Lyman alpha, raises an error (use specialized function).
 
-    wavelength: wavelength array
-    spectrum  : flux density array
-    errors    : flux density uncertainties
-    linename  : name of the line (needs to be in wavedict)
-    initial_guesses: dictionary of initial guesses of parameters (LPEAK is required, others optional)
-    bounds    : dictionary of parameter bounds
-    continuum_buffer: buffer region around the line to include in the fit
-    plot_result: whether to plot the fitting result
-    ax_in     : axis to plot on (if plot_result is True)
-    bootstrap_params: optional dictionary of parameters for Monte Carlo error estimation
-                      (niter, errfunc, chisq_thresh, sig_clip, autocorrelation, max_lag, 
-                       baseline_order, max_nfev). If None, uses standard curve_fit errors.
+    Parameters
+    ----------
+    wavelength : array-like
+        Wavelength array.
+    spectrum : array-like
+        Flux density array.
+    errors : array-like
+        Flux density uncertainties.
+    linename : str
+        Name of the line (must be in wavedict).
+    initial_guesses : dict
+        Dictionary of initial guesses for parameters (LPEAK required, others optional).
+    bounds : dict, optional
+        Dictionary of parameter bounds.
+    continuum_buffer : float, optional
+        Buffer region around the line to include in the fit (default: 25).
+    plot_result : bool, optional
+        If True, plot the fitting result (default: True).
+    ax_in : matplotlib axis, optional
+        Axis to plot on (if plot_result is True).
+    bootstrap_params : dict, optional
+        Dictionary of parameters for Monte Carlo error estimation (niter, errfunc, chisq_thresh, 
+        sig_clip, autocorrelation, max_lag, baseline_order, max_nfev). If None, uses standard curve_fit errors.
+
+    Returns
+    -------
+    fit_result : dict
+        Dictionary containing fit parameters, errors, model, fit mask, reduced chi-squared, and peak check results.
+
+    Notes
+    -----
+    - Uses curve_fit for fitting; can use Monte Carlo error estimation if bootstrap_params is provided.
+    - Handles doublet lines automatically.
+
+    Examples
+    --------
+    >>> fit_line(wavelength, spectrum, errors, 'CIV', {'LPEAK': 1549}, bounds={'LPEAK': (1540, 1560)})
     """
 
     # If the line is Lyman alpha, use the specialised Lyman alpha fitting function
@@ -1023,38 +1174,65 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
     return fit_result
 
 
-def refit_other_line(wave, spec, spec_err, row, line_tab_row = None, width=25, ax_in=None,
-                     line_name = None, bootstrap_params: Optional[BootstrapParams] = None):
-    """Refit a non-Lyman alpha emission line based on prior fitting results.
-    Uses a single Gaussian plus linear baseline model with initial guesses from the table row.
-    In cases where no significant fit was previously found, gets initial guesses from the R21 catalogue.
-    If a secondary line of a doublet is passed, the primary is inferred and passed to the fitting function instead.
-    
-    Parameters:
-    -----------
-    wave:         wavelength array
-    spec:         flux density array
-    spec_err:     flux density error array
-    row:          the row of the megatab containing the fitting results to use as priors
-    line_tab_row: the row of the line table containing information about the line to fit from the 
-                  original catalogues. Only needs to be supplied if no significant fit was found previously.
-    width:        the width (in Angstroms) around the line to use for fitting
-    bootstrap_params: optional dictionary of parameters for Monte Carlo error estimation
-                      (niter, errfunc, chisq_thresh, sig_clip, autocorrelation, max_lag, 
-                       baseline_order, max_nfev). If None, uses standard curve_fit errors.
-    
-    Returns:
-    --------
+def refit_other_line(wave, spec, spec_err, row, line_tab_row = None, width=25, 
+                     ax_in=None, line_name = None, 
+                     bootstrap_params: Optional[BootstrapParams] = None):
+    """
+    Refit a non-Lyman alpha emission line based on prior fitting results.
+
+    Uses a single Gaussian plus linear baseline model with initial guesses from 
+    the table row. If no significant fit was previously found, gets initial 
+    guesses from the R21 catalogue. If a secondary line of a doublet is 
+    passed, the primary is inferred and passed to the fitting function instead.
+
+    Parameters
+    ----------
+    wave : numpy.ndarray
+        Wavelength array.
+    spec : numpy.ndarray
+        Flux density array.
+    spec_err : numpy.ndarray
+        Flux density error array.
+    row : dict
+        Row of the megatab containing the fitting results to use as priors.
+    line_tab_row : dict, optional
+        Row of the line table containing information about the line to fit from 
+        the original catalogues. Only needs to be supplied if no significant 
+        fit was found previously.
+    width : float, optional
+        Width (in Angstroms) around the line to use for fitting. Default is 25.
+    ax_in : matplotlib.axes.Axes, optional
+        Axis to plot the fit result on. If None, a new figure is created.
+    line_name : str, optional
+        Name of the line to fit. Required if line_tab_row is None.
+    bootstrap_params : dict, optional
+        Dictionary of parameters for Monte Carlo error estimation (niter, 
+        errfunc, chisq_thresh, sig_clip, autocorrelation, max_lag, 
+        baseline_order, max_nfev). If None, uses standard curve_fit errors.
+
+    Returns
+    -------
     param_dict : dict
-        Dictionary of fitted parameters (FLUX, LPEAK, FWHM, CONT, SLOPE, and FLUX2 if doublet)
+        Dictionary of fitted parameters (FLUX, LPEAK, FWHM, CONT, SLOPE, and 
+        FLUX2 if doublet).
     error_dict : dict
-        Dictionary of parameter uncertainties
+        Dictionary of parameter uncertainties.
     model : callable
-        The model function used for fitting
+        The model function used for fitting.
     reduced_chisq : float
-        Reduced chi-square of the fit
+        Reduced chi-square of the fit.
     multipeak_flag : str
-        Quality flag: 'm' if multiple comparable peaks detected, '' otherwise
+        Quality flag: 'm' if multiple comparable peaks detected, '' otherwise.
+
+    Notes
+    -----
+    - Uses single or double Gaussian models depending on the line type.
+    - Initial guesses are taken from previous fit results or catalogue values.
+    - Monte Carlo error estimation is used if bootstrap_params is provided.
+
+    Examples
+    --------
+    >>> param_dict, error_dict, model, reduced_chisq, flag = refit_other_line(wave, spec, spec_err, row)
     """
     if line_tab_row is None and line_name is None:
         raise ValueError("Either line_tab_row or line_name must be provided.")
@@ -1147,44 +1325,40 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row = None, width=25, a
 
 def flatten_spectrum(spectrum, return_continuum=False):
     """
-    Remove a linear continuum trend from a spectrum.
-    
-    This function fits a straight line to the spectrum and subtracts the slope,
-    leaving only the continuum level. This is useful for absorption line analysis
-    where you want to remove large-scale continuum variations.
-    
+    Remove a linear continuum trend from a spectrum by fitting and subtracting a straight line.
+
+    Fits a straight line to the spectrum and subtracts the slope, leaving only the continuum 
+    level. Useful for absorption line analysis where large-scale continuum variations should 
+    be removed.
+
     Parameters
     ----------
     spectrum : numpy.ndarray
         1D array of flux values to flatten.
     return_continuum : bool, optional
-        If True, return both the flattened spectrum and the fitted continuum model.
-        If False, return only the flattened spectrum. Default is False.
-    
+        If True, return both the flattened spectrum and the fitted continuum model. If False, 
+        return only the flattened spectrum. Default is False.
+
     Returns
     -------
     flattened : numpy.ndarray
         Spectrum with linear trend removed, retaining only the continuum level.
-    continuum : numpy.ndarray (only if return_continuum=True)
-        The fitted linear continuum model.
-    
+    continuum : numpy.ndarray, optional
+        The fitted linear continuum model (only if return_continuum=True).
+
     Notes
     -----
-    - Uses scipy.optimize.curve_fit with a simple linear model: f(x) = a*x + b
-    - The returned spectrum has the slope removed but keeps the continuum level (b)
-    - This preserves the approximate flux level while removing linear trends
+    - Uses scipy.optimize.curve_fit with a simple linear model: $f(x) = a x + b$
+    - The returned spectrum has the slope removed but keeps the continuum level ($b$)
     - Useful for normalizing absorption features before stacking
-    
+
     Examples
     --------
     >>> from astro_utils import fitting as aufit
     >>> import numpy as np
-    >>> # Create a spectrum with linear trend
     >>> x = np.arange(100)
     >>> spec = 10.0 + 0.05 * x + np.random.normal(0, 0.1, 100)
-    >>> # Flatten it
     >>> flat_spec = aufit.flatten_spectrum(spec)
-    >>> # Or get the continuum model too
     >>> flat_spec, continuum = aufit.flatten_spectrum(spec, return_continuum=True)
     """
     

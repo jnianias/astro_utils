@@ -18,6 +18,7 @@ from astropy.nddata import Cutout2D
 from astropy.coordinates import SkyCoord
 from . import spectroscopy as spectro
 from astropy.io import ascii
+from astropy.convolution import convolve, Gaussian2DKernel
 
 def get_muse_psf(clus):
     """
@@ -34,37 +35,13 @@ def get_muse_psf(clus):
         PSF FWHM in arcseconds.
     """
     base_dir = io.get_data_dir()
-    psf_file = Path(base_dir) / 'muse_data' / 'muse_fwhms.txt'
+    psf_file = Path(base_dir) / 'muse_fwhms.txt'
     # Read the psf data table using astropy ascii
     fwhmtb = np.loadtxt(psf_file, dtype={'names': ('CLUSTER', 'PSF_FWHM'), 'formats': ('U20', 'f4')}, skiprows=1)
     clusind = np.where(fwhmtb['CLUSTER'] == clus)[0]
     if len(clusind) == 0: # If the cluster is not found, raise an error
         raise ValueError(f"Cluster {clus} not found in PSF data file.")
     return fwhmtb['PSF_FWHM'][clusind[0]]
-
-
-def get_muse_cube_dir():
-    """
-    Get the MUSE data cube directory from environment variable or construct from base data dir.
-    
-    Returns
-    -------
-    Path
-        Path to the directory containing MUSE data cubes.
-    
-    Notes
-    -----
-    Checks for MUSE_CUBE_DIR environment variable first. If not set, constructs path
-    from ASTRO_DATA_DIR. Expected structure: $ASTRO_DATA_DIR/muse_data/
-    """
-    # Check for explicit override
-    cube_dir = os.environ.get('MUSE_CUBE_DIR')
-    if cube_dir:
-        return Path(cube_dir)
-    
-    # Otherwise construct from base data directory
-    base_dir = io.get_data_dir()
-    return Path(base_dir) / 'muse_data'
 
 
 def make_muse_img(row, size, lcenter, width, cont=None, verbose=True):
@@ -133,7 +110,7 @@ def make_muse_img(row, size, lcenter, width, cont=None, verbose=True):
         print(f"Loading {clus} cube...")
 
     # Find and open the cube
-    cube_dir = get_muse_cube_dir()
+    cube_dir = io.get_muse_cube_dir()
     cube_files = glob.glob(str(cube_dir / clus / 'cube' / '*.fits'))
     if not cube_files:
         raise FileNotFoundError(f"No FITS cube files found for cluster {clus} in {cube_dir / clus / 'cube'}")
@@ -172,7 +149,8 @@ def make_muse_img(row, size, lcenter, width, cont=None, verbose=True):
     else:
         return img_line
 
-def show_segmentation_mask(row, ax_in, return_array = False, size = 'auto', download_if_missing=False):
+def show_segmentation_mask(row, ax_in, return_cutout = False, size = 'auto', download_if_missing=False,
+                           convolve_psf = None):
     """
     Overlay the R21 segmentation map on a given matplotlib axis.
     
@@ -192,6 +170,12 @@ def show_segmentation_mask(row, ax_in, return_array = False, size = 'auto', down
     download_if_missing : bool, optional
         If True, attempts to download the segmentation map if not found locally.
         Default is False.
+    convolve_psf : float or None, optional
+        If provided, the segmentation map cutout will be convolved with a Gaussian PSF of this FWHM (in arcseconds).
+        Default is None (no convolution).
+    return_cutout : bool, optional
+        If True, returns the Cutout2D object containing the segmentation map cutout.
+        Default is False.
     
     Returns
     -------
@@ -209,19 +193,39 @@ def show_segmentation_mask(row, ax_in, return_array = False, size = 'auto', down
     with io.load_segmentation_map(clus, download_if_missing=download_if_missing) as seg_hdul:
         if seg_hdul is None:
             print(f"Segmentation map for cluster {clus} could not be loaded.")
-            return None
+            raise FileNotFoundError(f"Segmentation map for cluster {clus} not found.")
         
-        # Get the primary HDU
-        segmap = seg_hdul[0].data
-        segmap_header = seg_hdul[0].header
+        # Look for an extension called "DATA". If not present, revert to primary HDU
+        if 'DATA' in seg_hdul:
+            segmap = seg_hdul['DATA'].data
+            segmap_header = seg_hdul['DATA'].header
+        else:
+            segmap = seg_hdul[0].data
+            segmap_header = seg_hdul[0].header
+        
         segmap_wcs = WCS(segmap_header)
 
+        # Check to see whether the object ID exists in the segmentation map
+        if idno not in segmap:
+            # Check to see what the iden is at the source position
+            pix_coords = segmap_wcs.world_to_pixel(position) # Convert world to pixel coordinates
+            x_pix, y_pix = int(pix_coords[0]), int(pix_coords[1]) # Pixel coordinates
+            id_at_position = -1
+            if (0 <= x_pix < segmap.shape[1]) and (0 <= y_pix < segmap.shape[0]): # Check to make sure within array bounds
+                id_at_position = segmap[y_pix, x_pix] # Value at that pixel
+            else:
+                raise ValueError(f"Source position {position.to_string('hmsdms')} is out of bounds for "
+                                 f"segmentation map of cluster {clus}.")
+            print(f"Object ID {id} not found in segmentation map for cluster {clus}. "
+                  f"ID at source position is {id_at_position}. Using that instead.")
+            idno = id_at_position
+                
         # Determine size of cutout
         if size == 'auto':
             ys, xs = np.where(segmap == idno)
             if len(xs) == 0 or len(ys) == 0:
                 print(f"Can't find segmentation region for object ID {id} in cluster {clus}.")
-                return
+                return None
             # Determine the minimum enclosing box
             x_min, x_max = np.min(xs), np.max(xs)
             y_min, y_max = np.min(ys), np.max(ys)
@@ -237,8 +241,17 @@ def show_segmentation_mask(row, ax_in, return_array = False, size = 'auto', down
         cutout = Cutout2D(segmap, position, size*u.arcsec, wcs=segmap_wcs, mode='trim')
         cutout.data = cutout.data == idno
 
-        # Overlay contour outlining the segmentation map on the provided axis
-        ax_in.contour(cutout.data, levels=[0.5], colors='red', linewidths=1.5)
+        # Optionally convolve with Gaussian PSF
+        if convolve_psf is not None:
+            pixel_scale = np.abs(cutout.wcs.pixel_scale_matrix[0,0]) * 3600.0 # arcsec/pixel
+            sigma_pixels = (convolve_psf / (2.0 * np.sqrt(2.0 * np.log(2.0)))) / pixel_scale
+            kernel = Gaussian2DKernel(sigma_pixels)
+            cutout.data = convolve(cutout.data.astype(float), kernel, fill_value=0.0)
+            cutout.data = cutout.data > 0.1 # Binarize after convolution
 
-        if return_array:
+        # Overlay contour outlining the segmentation map on the provided axis
+        ax_in.contour(cutout.data, levels=[0.5], colors='red', linewidths=1.5, 
+                      transform=ax_in.get_transform(WCS(cutout.wcs.to_header())))
+
+        if return_cutout:
             return cutout # returns the cutout object containing vital WCS info

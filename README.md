@@ -38,51 +38,14 @@ pip install -e .
 - beautifulsoup4
 - requests
 
+
 ## Configuration
 
 ### Quick Start
 
-Set the base data directory where your MUSE catalogs and spectra are stored:
+By default, the package expects your MUSE catalogs and spectra to be organized under a single base data directory. You can specify this directory when using the package, or configure it in your scripts as needed.
 
-```bash
-export R21_DATA_DIR="/path/to/your/data"
-```
-
-
-Optionally, set the R21 data URL (you'll be prompted if not set):
-
-```bash
-export R21_URL="<your_R21_data_url>"
-```
-
-### Using a .env File
-
-1. Copy the example environment file:
-   ```bash
-   cp .env.example .env
-   ```
-
-2. Edit `.env` with your paths:
-    ```bash
-    ASTRO_DATA_DIR=/path/to/your/data
-    R21_URL=<your_R21_data_url>
-    ```
-
-3. Load the environment in Python:
-   ```python
-   from dotenv import load_dotenv
-   load_dotenv()
-   
-   from astro_utils import spectroscopy, fitting
-   ```
-
-### Environment Variables
-
-- `ASTRO_DATA_DIR` - Base directory for all data (default: `~/.astro_data`)
-- `R21_URL` - Base URL for R21 data downloads
-- `R21_SPECTRA_DIR` - Override for spectra location
-- `R21_CATALOG_DIR` - Override for catalog location
-- `SOURCE_SPECTRA_DIR` - Override for source spectra location
+No environment variables are required. All configuration is handled via function arguments or configuration files.
 
 See [CONFIG.md](CONFIG.md) for detailed configuration documentation.
 
@@ -181,27 +144,33 @@ plt.show()
 - Spectrum visualization
 - Model overlay plotting
 
+
 ## Data Structure
 
-The package expects the following directory structure (created automatically):
+
+The package expects the following directory structure (see CONFIG.md for details):
 
 ```
-$ASTRO_DATA_DIR/
-├── muse_catalogs/
-│   ├── catalogs/          # R21 catalog FITS files
-│   │   ├── A2744_v1.0.fits
-│   │   ├── A2744_v1.0_lines.fits
-│   │   └── ...
-│   └── spectra/           # R21 spectra
-│       ├── A2744/
-│       │   ├── spec_X1234_weight_skysub.fits
-│       │   └── ...
-│       └── ...
-└── source_spectra/        # Aperture spectra
-    ├── A2744/
-    │   ├── idX1234_2fwhm_spec.fits
-    │   └── ...
-    └── ...
+<base_data_dir>/
+├── <CLUSTER>/
+│   ├── catalogs/
+│   │   ├── fit_results/         # results of user fitting
+│   │   │   ├── <CLUSTER>lya_lines_?fwhm.fits
+│   │   │   └── <CLUSTER>lines_?fwhm.fits
+│   │   └── R21/                # R21 catalogues
+│   │       ├── <CLUSTER>_v?.?.fits
+│   │       └── <CLUSTER>_v?.?_lines.fits
+│   ├── spectra/
+│   │   ├── aper/                # User-extracted aperture spectra
+│   │   └── R21/                 # R21 spectra
+│   ├── cubes/                   # MUSE data cubes
+│   └── misc/                    # Miscellaneous auxiliary files (e.g. weight maps, segmentation maps)
+├── <CLUSTER2>/
+│   ├── catalogs/
+│   ├── spectra/
+│   ├── cubes/
+│   └── misc/
+├── ... (other clusters)
 ```
 
 ## Examples
