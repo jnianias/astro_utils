@@ -15,6 +15,7 @@ Please note that much of the documentation is, at present, machine-generated. Co
 - Velocity/wavelength conversion utilities
 - Stacking of multiply-lensed sources
 - Stacking of multiple spectra and lines
+- Extraction of MUSE spectra using apertures
 
 ## Installation
 
@@ -57,10 +58,10 @@ See [CONFIG.md](CONFIG.md) for detailed configuration documentation.
 from astro_utils import spectroscopy as spectro
 
 # Load R21 spectrum
-spec = spectro.load_r21_spec('A2744', '1234', 'E', 'weight_skysub')
+spec = spectro.load_r21_spec('A2744', '1234', 'PRIOR', 'weight_skysub')
 
 # Load aperture spectrum
-spec = spectro.load_aper_spec('A2744', '1234', 'E', '2fwhm')
+spec = spectro.load_aper_spec('A2744', '1234', 'PRIOR', '2fwhm')
 ```
 
 ### Fitting Emission Lines

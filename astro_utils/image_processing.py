@@ -10,7 +10,7 @@ import glob
 import os
 from pathlib import Path
 import astropy.units as u
-from mpdaf.obj import Cube
+from mpdaf.obj import Cube, Image
 from . import io
 import matplotlib.pyplot as plt
 from astropy.wcs import WCS

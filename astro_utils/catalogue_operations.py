@@ -3,98 +3,10 @@ import numpy as np
 from astropy.io import fits
 from astropy.table import Column, vstack
 import astropy.units as u
-import requests
-from pathlib import Path
-from bs4 import BeautifulSoup
-
-import re
 import glob
-import os
 from . import spectroscopy as spectro
 from . import constants as const
 from . import io as io
-
-# Module-level constant for the R21 catalogue base URL
-R21_CATALOG_BASE_URL = os.environ.get(
-    'R21_CATALOG_BASE_URL',
-    'https://cral-perso.univ-lyon1.fr/labo/perso/johan.richard/MUSE_data_release/catalogs/'
-)
-
-class R21CatalogNotFoundError(Exception):
-    """Exception raised when R21 catalog is not available for a cluster"""
-    pass
-
-def get_catalog_dir():
-    """
-    Return the catalog directory as a Path object.
-
-    The directory is determined by the R21_CATALOG_DIR environment variable if set,
-    otherwise it is constructed from the base data directory.
-
-    Returns
-    -------
-    Path
-        Path object pointing to the catalog directory.
-    """
-    # Check for explicit override
-    catalog_dir = os.environ.get('R21_CATALOG_DIR')
-    if catalog_dir:
-        return Path(catalog_dir)
-    
-    # Otherwise construct from base data directory
-    base_dir = io.get_data_dir()
-    return Path(base_dir) / 'muse_catalogs' / 'catalogs'
-
-def load_r21_catalogue(cluster):
-    """
-    Load the R21 lensing catalog for a given cluster from local cache, or download if not present.
-
-    Parameters
-    ----------
-    cluster : str
-        Name of the cluster.
-
-    Returns
-    -------
-    astropy.table.Table
-        The R21 lensing catalog as an Astropy Table.
-
-    Raises
-    ------
-    R21CatalogNotFoundError
-        If the catalog cannot be found or downloaded.
-    """
-    # Define the path to the local cache directory
-    cache_dir = get_catalog_dir()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    # Local file path
-    local_path = cache_dir.glob(f"{cluster}_v?.?.fits")
-    local_path = list(local_path)
-
-    # If not found locally, attempt to download
-    if len(local_path) == 0:
-        print(f"R21 catalog for {cluster} not found locally. Attempting to download...")
-        success = download_r21_catalogue(cluster)
-        if not success:
-            raise R21CatalogNotFoundError(f"R21 catalog for {cluster} could not be downloaded.")
-        
-    # Check again for the local file after download attempt
-    local_path = cache_dir.glob(f"{cluster}_v?.?.fits")
-    local_path = list(local_path)
-    if len(local_path) == 0:
-        raise R21CatalogNotFoundError(f"R21 catalog for {cluster} still not found after download attempt.")
-    elif len(local_path) > 1:
-        print(f"Multiple versions of R21 catalog found for {cluster}. Using the first one.")
-
-    local_path = local_path[0]  # Use the first match if multiple found
-    
-    # Load and return the catalog as an astropy table
-    try:
-        r21_table = aptb.Table(fits.open(local_path)[1].data)
-        return r21_table
-    except Exception as e:
-        raise R21CatalogNotFoundError(f"Failed to load R21 catalog for {cluster}: {e}")
         
 def has_valid_mul(row):
     """
@@ -150,8 +62,8 @@ def make_r21_catalogue_dict(clusters):
     lenstables = {}
     for clus in clusters:
         try:
-            lenstables[clus] = load_r21_catalogue(clus)
-        except R21CatalogNotFoundError as e:
+            lenstables[clus] = io.load_r21_catalogue(clus)
+        except FileNotFoundError as e:
             print(e)
             lenstables[clus] = None
     return lenstables
@@ -244,79 +156,6 @@ def is_counterpart(row1, row2, lenstables, sigma=3.0, method='fit_match'):
             # Fall back to fit matching if R21 not available
             print(f"No lens table available for {clus}, falling back to fit matching")
             return is_counterpart(row1, row2, lenstables, sigma=sigma, method='fit_match')
-        
-
-
-def download_r21_catalogue(cluster, dest_dir=None):
-
-    """
-    Download the R21 lens catalog from the server, with special case handling for the Bullet cluster.
-
-    The base URL can be overridden by setting the R21_CATALOG_BASE_URL environment variable.
-
-    Parameters
-    ----------
-    cluster : str
-        Name of the cluster.
-    dest_dir : str or Path, optional
-        Destination directory for the downloaded file. If None, uses the default catalog directory.
-
-    Returns
-    -------
-    str or None
-        Path to the downloaded FITS file, or None if not found.
-
-    Example
-    -------
-    >>> download_r21_catalogue('A2744')
-    '/path/to/catalog/A2744_v1.1.fits'
-    """
-
-    # Use provided destination directory or get from configuration
-    if dest_dir is None:
-        dest_dir = get_catalog_dir()
-    else:
-        dest_dir = Path(dest_dir)
-
-    # Ensure destination directory exists
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    # Handle the special case for Bullet cluster
-    if cluster.upper() == 'BULLET':
-        server_cluster_name = 'Bullet'  # Lowercase on server
-    else:
-        server_cluster_name = cluster   # Normal case on server
-
-    # Use the module-level constant for the base URL
-    base_url = R21_CATALOG_BASE_URL
-    print(f"Scraping directory listing: {base_url}")
-    response = requests.get(base_url)
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    # Find the latest versioned FITS file
-    pattern = re.compile(rf"{cluster.lower()}_v\d+\.\d+\.fits", re.IGNORECASE)
-    fits_file = None
-    for link in soup.find_all("a"):
-        href = link.get("href")
-        if href and pattern.fullmatch(href.lower()):
-            fits_file = href
-            print(f"Found catalogue file: {fits_file}")
-            break
-
-    if not fits_file:
-        print("No matching FITS file found in directory listing.")
-        return None
-
-    # Download the file
-    file_url = base_url + fits_file
-    print(f"Downloading {file_url} ...")
-    file_response = requests.get(file_url)
-    dest_path = dest_dir / fits_file
-    with open(dest_path, "wb") as f:
-        f.write(file_response.content)
-    print(f"Download complete: {dest_path}")
-
-    return str(dest_path)
 
 
 def get_muse_cand(iden, clus):
@@ -346,8 +185,7 @@ def get_muse_cand(iden, clus):
         iden = iden[:-2] # Just remove the '55' at the end
 
     # Get the relevant cluster line table
-    catalog_dir = get_catalog_dir()
-    linetab = fits.open(glob.glob(str(catalog_dir / f'{clus}_v1.?_lines.fits'))[0])[1].data
+    linetab = io.load_r21_catalogue(clus)
 
     # Generate a column of full identifiers
     full_idens = np.array([x['idfrom'][0].replace('E','X') + str(x['iden']) for x in linetab])

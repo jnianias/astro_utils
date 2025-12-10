@@ -14,6 +14,7 @@ import astropy.table as aptb
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
+from mpdaf import Cube
 
 def get_r21_cat_url():
     """
@@ -176,7 +177,7 @@ def get_data_dir():
     except (EOFError, KeyboardInterrupt):
         raise ValueError("\nMUSE_DATA_DIR is required but not provided.")
 
-def get_R21_catalog_dir(cluster):
+def get_r21_catalog_dir(cluster):
     """
     Get the directory where the R21 catalogues are stored for a given cluster.
 
@@ -216,7 +217,7 @@ def get_fit_catalog_dir(cluster):
         raise FileNotFoundError(f"Catalog directory does not exist: {catalog_dir}")
     return catalog_dir
 
-def get_R21_spectra_dir(cluster):
+def get_r21_spectra_dir(cluster):
     """
     Get the directory where the R21 spectra are stored for a given cluster.
 
@@ -320,7 +321,7 @@ def load_r21_catalogue(cluster, type='source'):
         If the catalog cannot be found or downloaded.
     """
     # Define the path to the local cache directory
-    cache_dir = get_R21_catalog_dir(cluster)
+    cache_dir = get_r21_catalog_dir(cluster)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     fpattern = f"{cluster}_v?.?.fits" if type == 'source' else f"{cluster}_v?.?_lines.fits"
@@ -362,9 +363,9 @@ def load_spec(clus, iden, idfrom, spec_source = 'R21', spectype = 'weight_skysub
     clus : str
         Cluster name (e.g., 'A2744', 'MACS0416', etc.)
     iden : int
-        Identifier number of the object (e.g., 1234)
+        Identifier number of the object (e.g., 1234) or str (e.g., 'X1234')
     idfrom : str
-        Prefix letter of the identifier (e.g., 'E' for E1234)
+        Detection type of the source (i.e., 'MUSELET', 'PRIOR', or 'EXTERNAL')
     spec_source : str
         Source of the spectrum ('R21' for Richard et al. 2021, 'APER' for aperture spectra)
     spectype : str
@@ -413,7 +414,7 @@ def load_r21_spec(clus, iden, idfrom, spectype):
     print(f"Loading R21 spectrum for {clus} object {identifier}...")
 
     # Get the spectra directory and construct the full path
-    cluster_dir = get_R21_spectra_dir(clus)
+    cluster_dir = get_r21_spectra_dir(clus)
 
     # Locate the file
     locfile = glob.glob(f"{cluster_dir}/spec_{identifier}_{spectype}.fits")
@@ -562,3 +563,32 @@ def load_segmentation_map(clus, download_if_missing=False):
     except Exception as e:
         print(f"Error loading segmentation map: {e}")
         return None
+    
+def load_muse_cube(clus):
+    """
+    Load the MUSE cube for a given cluster.
+
+    Parameters
+    ----------
+    clus : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+
+    Returns
+    -------
+    astropy.io.fits.HDUList
+        The MUSE cube HDUList.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the MUSE cube file cannot be found.
+    """
+    cube_path = get_muse_cube_dir(clus) / f"{clus}_MUSE_cube.fits"
+
+    if not os.path.isfile(cube_path):
+        raise FileNotFoundError(f"MUSE cube file not found: {cube_path}")
+
+    try:
+        return Cube(str(cube_path))
+    except Exception as e:
+        raise FileNotFoundError(f"Error loading MUSE cube: {e}")
