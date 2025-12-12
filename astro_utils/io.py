@@ -592,3 +592,65 @@ def load_muse_cube(clus):
         return Cube(str(cube_path))
     except Exception as e:
         raise FileNotFoundError(f"Error loading MUSE cube: {e}")
+    
+def save_spectrum(spectrum, spec_file):
+    """
+    Save the extracted spectrum to a FITS file. If input spectrum is an MPDAF Spectrum object,
+    processes it to a standard format before saving. Otherwise, checks column names, modifies
+    if necessary, and saves the astropy Table directly.
+
+    Parameters
+    ----------
+    spectrum : mpdaf.obj.Spectrum or astropy.table.Table
+        The extracted spectrum object.
+    spec_file : str or Path
+        The file path where the spectrum will be saved.
+    """
+    if 'mpdaf.obj.Spectrum' in str(type(spectrum)):
+        # Convert MPDAF Spectrum to astropy Table
+        wave = spectrum.wave.coord()
+        spec = spectrum.data
+        spec_err = spectrum.var**0.5
+        spec_table = aptb.Table([wave, spec, spec_err], names=('wave', 'spec', 'spec_err'))
+    elif isinstance(spectrum, aptb.Table):
+        spec_table = spectrum
+        # Check for required columns
+        required_cols = {'wave', 'spec', 'spec_err'}
+        # If columns are named differently, attempt to rename them
+        # Wavelength must be monotonically increasing, so look for that first
+        for col in spec_table.colnames:
+            if np.all(np.diff(spec_table[col]) > 0):
+                spec_table.rename_column(col, 'wave')
+                break
+        # Next, look for flux and error columns based on typical names
+        for col in spec_table.colnames:
+            if col.lower() in ['flux', 'spec', 'spectrum']:
+                spec_table.rename_column(col, 'spec')
+            elif col.lower() in ['error', 'spec_err', 'specerror', 'uncertainty', 'err']:
+                spec_table.rename_column(col, 'spec_err')
+    else:
+        raise TypeError("spectrum must be an MPDAF Spectrum object or an astropy Table.")
+
+    # Save the spectrum table to FITS
+    spec_table.write(spec_file, format='fits', overwrite=True)
+    print(f"Spectrum saved to {spec_file}")
+
+def get_plot_dir(cluster, iden):
+    """
+    Get the directory where plots are stored for a given source. If it doesn't exist, creates it.
+
+    Parameters
+    ----------
+    cluster : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+
+    Returns
+    -------
+    str
+        The directory path where plots for the specified cluster are stored.
+    """
+    data_dir = get_data_dir()
+    plot_dir = data_dir / cluster.upper() / 'plots' / iden
+    if not plot_dir.exists(): # Create the directory if it does not exist
+        plot_dir.mkdir(parents=True, exist_ok=True)
+    return plot_dir

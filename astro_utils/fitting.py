@@ -11,6 +11,8 @@ from error_propagation import Complex
 from . import spectroscopy as spectro
 import matplotlib.pyplot as plt
 import error_propagation as ep
+from collections import namedtuple
+from . import plotting as plot
 
 # Import moved components for backwards compatibility
 from .spectroscopy import generate_spec_mask, mask_skylines, mask_otherlines
@@ -21,6 +23,8 @@ doubletdict = const.doublets
 skylinedict = const.skylines
 c           = const.c  # speed of light in km/s
 
+# Define a namedtuple for fit results
+FitResult = namedtuple('FitResult', ['parameters', 'errors', 'model', 'reduced_chisq'])
 
 def which_fit_method(linename):
     """
@@ -698,7 +702,72 @@ class BootstrapParams(TypedDict, total=False):
     max_nfev: int
 
 
-def prep_inputs(initial_guesses, bounds, linename, z_lya):
+def get_initial_guesses(linetab, linename):
+    """
+    Extract initial guesses for fitting parameters from a line table.
+
+    Parameters
+    ----------
+    linetab : astropy Table
+        Table containing line information with columns for initial guesses.
+    linename : str
+        Name of the line to extract initial guesses for.
+
+    Returns
+    -------
+    dict
+        Dictionary of initial guesses for parameters.
+
+    Notes
+    -----
+    - Expects columns in linetab to be named as '{linename}_PARAM' for each parameter.
+    - Parameters include LPEAK, FWHM, AMP, ASYM, KURT, etc.
+
+    Examples
+    --------
+    >>> get_initial_guesses(linetab, 'LYALPHA')
+    {'LPEAK': 1216.0, 'FWHM': 300.0, 'AMP': 1.0}
+    """
+    # Get the row of the table for this line
+    linerow = linetab[linetab['LINE'] == linename][0]
+    # If it's the primary line of a doublet, also get the secondary line info
+    if linename in doubletdict:
+        sec_linename = const.slines[np.where(const.flines == linename)[0][0]]
+        sec_linerow = linetab[linetab['LINE'] == sec_linename][0]
+    # Lyman alpha and other lines must be treated separately due to different parameters
+    if linename == 'LYALPHA':
+        initial_guesses = {
+            'AMPB': linerow['PEAK_OBS'], # amplitude of blue peak
+            'LPEAKB': linerow['LBDA_OBS'] - 7.5, # peak wavelength for blue peak
+            'DISPB': linerow['FWHM_OBS'] / 2.355, # approximate dispersion equivalent (n.b. not exact for asymmetric gaussian)
+            'ASYMB': -0.1,                 # asymmetry -- generic guess
+            'AMPR': linerow['PEAK_OBS'], # amplitude of red peak
+            'LPEAKR': linerow['LBDA_OBS'], # peak wavelength for red peak
+            'DISPR': linerow['FWHM_OBS'] / 2.355, # approximate dispersion equivalent (n.b. not exact for asymmetric gaussian)
+            'ASYMR': 0.1,                  # asymmetry -- generic guess
+            'CONT': linerow['CONT_OBS'], # continuum level
+        }
+    elif linename in doubletdict:
+        initial_guesses = {
+            'FLUX': linerow['FLUX'] / 5,  # integrated flux of primary line with correction factor
+            'LPEAK': linerow['LBDA_OBS'], # peak wavelength
+            'FWHM': linerow['FWHM_OBS'], # fwhm
+            'FLUX2': sec_linerow['FLUX'] / 5, # flux ratio of second line to first with correction factor
+            'CONT': linerow['CONT_OBS'], # continuum level
+        }
+    else:
+        initial_guesses = {
+            'FLUX': linerow['FLUX'] / 5,  # integrated flux with correction factor
+            'LPEAK': linerow['LBDA_OBS'], # peak wavelength
+            'FWHM': linerow['FWHM_OBS'], # fwhm
+            'CONT': linerow['CONT_OBS'], # continuum level
+        }
+
+    return initial_guesses
+        
+
+
+def prep_inputs(initial_guesses, linename, z_lya, bounds={}):
     """
     Prepare and validate input parameters for fitting routines.
 
@@ -706,12 +775,12 @@ def prep_inputs(initial_guesses, bounds, linename, z_lya):
     ----------
     initial_guesses : dict
         Dictionary of initial guesses for parameters (LPEAK is required, others optional).
-    bounds : dict
-        Dictionary of parameter bounds.
     linename : str
         Name of the line (must be present in wavedict).
     z_lya : float
         Redshift of Lyman-alpha line (used as sanity check for LPEAK).
+    bounds : dict, optional
+        Dictionary of bounds for parameters (keys matching those in initial_guesses).
 
     Returns
     -------
@@ -751,7 +820,8 @@ def prep_inputs(initial_guesses, bounds, linename, z_lya):
         warnings.warn(f"Initial guess for LPEAK ({lpeak_init:.2f} Å) is {delta_v:.1f} km/s \
                        from Lyman alpha ({expected_wavelength:.2f} Å); resetting to -200 km/s offset.")
         initial_guesses['LPEAK'] = spectro.vel2wave(-200, wavedict[linename], z_lya)
-        bounds['LPEAK'] = (initial_guesses['LPEAK'] - 6.25, initial_guesses['LPEAK'] + 6.25)
+        if 'LPEAK' in bounds:
+            bounds['LPEAK'] = (initial_guesses['LPEAK'] - 6.25, initial_guesses['LPEAK'] + 6.25)
 
     # Check values of initial guesses and bounds for bad values
     for param, value in initial_guesses.items():
@@ -833,7 +903,7 @@ def check_inputs(p0, bounds):
 
 def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {},
              continuum_buffer = 25., plot_result = True, ax_in = None,
-             bootstrap_params: Optional[BootstrapParams] = None):
+             bootstrap_params: Optional[BootstrapParams] = None, save_plots=False, plot_dir=None):
     """
     Fit a single or double Gaussian profile to a spectral line (plus its doublet partner if present).
     If the line is Lyman alpha, raises an error (use specialized function).
@@ -861,6 +931,10 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
     bootstrap_params : dict, optional
         Dictionary of parameters for Monte Carlo error estimation (niter, errfunc, chisq_thresh, 
         sig_clip, autocorrelation, max_lag, baseline_order, max_nfev). If None, uses standard curve_fit errors.
+    save_plots : bool, optional
+        If True, saves the plot to a file (default: False).
+    plot_dir : str, optional
+        Directory to save plots if save_plots is True.
 
     Returns
     -------
@@ -1138,38 +1212,17 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
 
     # If requested, plot the fitting result
     if plot_result:
-
-        if ax_in is None:
-            fig, ax = plt.subplots(figsize=(8, 5), facecolor='w')
-        else:
-            ax = ax_in
-
-        # Plot the data
-        ax.plot(wl_fit, spec_fit, drawstyle='steps-mid', color='black', alpha=0.7, label='Fitted Data')
-        ax.fill_between(wl_fit, spec_fit - err_fit, spec_fit + err_fit, step='mid', color='grey', alpha=0.5)
-
-        # Generate a finely sampled wavelength array for plotting the model
-        wl_model = np.linspace(np.min(wl_fit), np.max(wl_fit), 1000)
-
-        # Overplot the fitted model
-        if method == 'doublet' and success:
-            model_flux = mdl.gaussian_doublet(rest_ratio)(wl_model, *poptg)
-            ax.plot(wl_model, model_flux, color='red', label='Doublet Fit', lw=2)
-            # Plot individual components
-            primary_comp = mdl.gaussian(wl_model, poptg[0], poptg[1], poptg[2], 0, 0)
-            secondary_comp = mdl.gaussian(wl_model, poptg[3], poptg[1]*rest_ratio, poptg[2], 0, 0)
-            ax.plot(wl_model, primary_comp, color='orange', ls='--', label='Primary Component')
-            ax.plot(wl_model, secondary_comp, color='green', ls='--', label='Secondary Component')
-        elif method == 'single' and success:
-            model_flux = mdl.gaussian(wl_model, *poptg)
-            ax.plot(wl_model, model_flux, color='red', label='Single Line Fit', lw=2)
-
-        ax.set_xlabel(r'Wavelength (\AA)')
-        ax.set_ylabel('Flux Density')
-        ax.set_title(f'Fit to {linename} Line')
-        ax.legend()
-        plt.show() if ax_in is None else None
-        plt.close() if ax_in is None else None
+        # Use the plotting module's plot_line_fit function
+        plot.plot_line_fit(
+            wl_fit, spec_fit, err_fit, 
+            poptg, model, linename,
+            save_plots=save_plots,
+            plot_dir=plot_dir if plot_dir is not None else './',
+            ax_in=ax_in,
+            method=method
+        )
+        
+        # Note: plot_line_fit now handles show/close internally when ax_in is None
 
     return fit_result
 
@@ -1180,10 +1233,10 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row = None, width=25,
     """
     Refit a non-Lyman alpha emission line based on prior fitting results.
 
-    Uses a single Gaussian plus linear baseline model with initial guesses from 
-    the table row. If no significant fit was previously found, gets initial 
-    guesses from the R21 catalogue. If a secondary line of a doublet is 
-    passed, the primary is inferred and passed to the fitting function instead.
+    Parses previous fit results from the row and delegates fitting to fit_line.
+    If no significant fit was previously found, uses initial guesses from the 
+    R21 catalogue. If a secondary line of a doublet is passed, the primary is 
+    inferred and passed to fit_line instead.
 
     Parameters
     ----------
@@ -1212,115 +1265,105 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row = None, width=25,
 
     Returns
     -------
-    param_dict : dict
-        Dictionary of fitted parameters (FLUX, LPEAK, FWHM, CONT, SLOPE, and 
-        FLUX2 if doublet).
-    error_dict : dict
-        Dictionary of parameter uncertainties.
-    model : callable
-        The model function used for fitting.
-    reduced_chisq : float
-        Reduced chi-square of the fit.
-    multipeak_flag : str
-        Quality flag: 'm' if multiple comparable peaks detected, '' otherwise.
+    fit_result : dict
+        Dictionary containing fit parameters, errors, model, reduced chi-squared, and flag.
+        (see fit_line for details)
 
     Notes
     -----
     - Uses single or double Gaussian models depending on the line type.
     - Initial guesses are taken from previous fit results or catalogue values.
     - Monte Carlo error estimation is used if bootstrap_params is provided.
+    - Delegates actual fitting to fit_line function.
 
     Examples
     --------
     >>> param_dict, error_dict, model, reduced_chisq, flag = refit_other_line(wave, spec, spec_err, row)
     """
+    # Validate inputs
     if line_tab_row is None and line_name is None:
         raise ValueError("Either line_tab_row or line_name must be provided.")
     if line_tab_row is not None:
         line_name = line_tab_row['LINE']
 
+    # Determine the primary line (handle doublets)
+    primary_line = line_name
+    secondary_line = None
+    doublet = np.any(const.flines == line_name) or np.any(const.slines == line_name)
+    
+    if doublet:
+        if np.any(const.flines == line_name):
+            # This is a primary doublet line
+            secondary_line = const.doublets[line_name][1]
+        elif np.any(const.slines == line_name):
+            # This is a secondary doublet line - use the primary for fitting
+            idx = np.where(const.slines == line_name)[0][0]
+            primary_line = const.flines[idx]
+            secondary_line = line_name
+
     # Was a significant fit found previously?
     significant_fit = np.abs(row['SNR_'+line_name]) > 3.0
 
-    # Is the line in a doublet?
-    doublet = np.any(const.flines == line_name) or np.any(const.slines == line_name)
-    # Get the doublet ratio if so, otherwise set to 1.0
-    doublet_ratio = 1.0
-    primary_line = line_name
-    secondary_line = None
-    if doublet:
-        if np.any(const.flines == line_name):
-            secondary_line = const.doublets[line_name][1]
-            doublet_ratio = const.wavedict[secondary_line] / const.wavedict[primary_line]
-        elif np.any(const.slines == line_name):
-            # Change the primary line name to the first line in the doublet
-            primary_line = const.slines[np.where(const.slines == line_name)[0][0] - 1]
-            secondary_line = line_name
-            doublet_ratio = const.wavedict[secondary_line] / const.wavedict[primary_line]
-    # What kind of function do we need to use, single or double Gaussian?
-    model_func = mdl.gaussian_doublet(doublet_ratio) if doublet else mdl.gaussian
-
-    # Calculate observed wavelength, multiplying by the ratio of the primary line rest wavelength to this line's rest wavelength
-    # (this value will be 1.0 if this is the primary line)
+    # Get observed wavelength from catalogue or previous fit
     if line_tab_row is None:
         r21_observed_wavelength = row[f'LPEAK_{primary_line}']
-        r21_observed_flux      = row[f'FLUX_{primary_line}']
+        r21_observed_flux = row[f'FLUX_{primary_line}']
     else:
-        r21_observed_wavelength = line_tab_row['LBDA_OBS'] * const.wavedict[primary_line] / const.wavedict[line_name]
-        r21_observed_flux      = line_tab_row['FLUX']
+        # Adjust wavelength if dealing with secondary line of a doublet
+        wave_ratio = const.wavedict[primary_line] / const.wavedict[line_name]
+        r21_observed_wavelength = line_tab_row['LBDA_OBS'] * wave_ratio
+        r21_observed_flux = line_tab_row['FLUX']
 
     print(f"Refitting {primary_line} at {r21_observed_wavelength:.2f} Angstroms for {row['CLUSTER']} {row['iden']}...")
     
-    # Names of parameters to be fitted
-    param_names = ['FLUX', 'LPEAK', 'FWHM']
+    # Build initial guesses dictionary
+    initial_guesses = {
+        'FLUX': row[f'FLUX_{primary_line}'] if significant_fit else r21_observed_flux,
+        'LPEAK': row[f'LPEAK_{primary_line}'] if significant_fit else r21_observed_wavelength,
+        'FWHM': row[f'FWHM_{primary_line}'] if significant_fit else 3.0,
+        'CONT': row[f'CONT_{primary_line}'] if significant_fit else np.nanmedian(spec),
+        'SLOPE': row[f'SLOPE_{primary_line}'] if significant_fit else 0.0,
+    }
     
-    # Initial guesses from the table, or the R21 catalogue if not available
-    flux_init = row[f'FLUX_{primary_line}'] if significant_fit else r21_observed_flux
-    cen_init  = row[f'LPEAK_{primary_line}'] if significant_fit else r21_observed_wavelength
-    wid_init  = row[f'FWHM_{primary_line}'] if significant_fit else 3.0 # just use a generic value here
-    # Put these into p0
-    p0 = [flux_init, cen_init, wid_init]
-    # And set the corresponding bounds
-    bounds = (
-        [-10000, cen_init - 6.25, 2.4],  # lower bounds, with width not less than the spectral resolution
-        [10000 , cen_init + 6.25, (300. / c) * cen_init ]   # upper bounds, with width not exceeding 300km/s
-    )
-
-    # If the line is a doublet, we need to add the flux of the second component (other parameters are tied)
-    if doublet:
-        # Check if the secondary line was also fitted (not NaN)
+    # Add secondary flux for doublets
+    if doublet and secondary_line is not None:
         secondary_fit = significant_fit and not np.isnan(row[f'FLUX_{secondary_line}'])
-        flux_init_2 = row[f'FLUX_{secondary_line}'] if secondary_fit else flux_init
-        param_names.extend(['FLUX2'])
-        p0.extend([flux_init_2])
-        # Also extend the bounds
-        bounds[0].extend([-10000])
-        bounds[1].extend([10000])
-
-    # Add continuum and slope initial guesses
-    cont_init = row[f'CONT_{primary_line}'] if significant_fit else np.nanmedian(spec) # use median of spectrum
-    slope_init = row[f'SLOPE_{primary_line}'] if significant_fit else 0.0  # assume flat continuum initially
-    p0.extend([cont_init, slope_init])
-    bounds[0].extend([-50, -1000])
-    bounds[1].extend([2000, 1000])
-    param_names.extend(['CONT', 'SLOPE'])
-
-    # Create initial guesses and bounds dictionaries
-    initial_guesses = dict(zip(param_names, p0))
-    bounds_dict = {param : (bounds[0][i], bounds[1][i]) for i, param in enumerate(param_names)}
+        initial_guesses['FLUX2'] = (row[f'FLUX_{secondary_line}'] if secondary_fit 
+                                    else initial_guesses['FLUX'])
     
-    # fit_line will handle validation of initial guesses and bounds
-    fit = fit_line(wave, spec, spec_err, primary_line, initial_guesses, bounds=bounds_dict,
-                   continuum_buffer=width, plot_result=True, ax_in=ax_in,
-                   bootstrap_params=bootstrap_params)
+    # Build bounds dictionary
+    cen_init = initial_guesses['LPEAK']
+    bounds = {
+        'FLUX': (-10000, 10000),
+        'LPEAK': (cen_init - 6.25, cen_init + 6.25),
+        'FWHM': (2.4, (300. / c) * cen_init),
+        'CONT': (-50, 2000),
+        'SLOPE': (-1000, 1000),
+    }
     
-    if 'param_dict' not in fit:
+    if doublet and secondary_line is not None:
+        bounds['FLUX2'] = (-10000, 10000)
+    
+    # Call fit_line to do the actual fitting
+    fit_result = fit_line(
+        wave, spec, spec_err, 
+        primary_line, 
+        initial_guesses, 
+        bounds=bounds,
+        continuum_buffer=width, 
+        plot_result=True, 
+        ax_in=ax_in,
+        bootstrap_params=bootstrap_params
+    )
+    
+    # Handle fit failure
+    if 'param_dict' not in fit_result:
         print(f"Fit failed for {primary_line} in {row['CLUSTER']} {row['iden']}.")
         nandict = {param: np.nan for param in initial_guesses.keys()}
         return nandict, nandict, None, np.nan, ''
-    else:
-        multipeak_flag = fit.get('multipeak_flag', '')
-        return fit['param_dict'], fit['error_dict'], fit['model'], fit['reduced_chisq'], multipeak_flag
+    
+    # Extract and return results
+    return fit_result
 
 
 def flatten_spectrum(spectrum, return_continuum=False):

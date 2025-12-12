@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 from . import spectroscopy as spectro
 from . import models
 import copy
+import os
+
 
 def plotline(iden, clus, idfrom, wln, ax_in, spec_source = '2fwhm', width=100, model=None, title = False,
              hline = None, hspan = None, vline = None, vspan = None,
@@ -238,3 +240,164 @@ def lya_mod_plot(row, axin, eml=False):
     # Plot the model
     axin.plot(hiresvel[1:-1], dldv[1:-1] * hiresmod[1:-1], 
               color='maroon', alpha=0.6, label=r"model", linestyle='--')
+    
+
+def plot_lya_fit(wave, spec, spec_err, popt, func, save_plots=False, plot_dir='./', ax_in=None):
+    """
+    Plot the Lyman alpha fit results along with the data.
+
+    Parameters
+    ----------
+    wave : array-like
+        Wavelength array of the spectrum.
+    spec : array-like
+        Flux array of the spectrum.
+    spec_err : array-like
+        Error array of the spectrum.
+    popt : array-like
+        Optimal fit parameters from the fitting procedure.
+    func : callable
+        The model function used for fitting.
+    save_plots : bool, optional
+        Whether to save the plot to disk. Default is False.
+    plot_dir : str, optional
+        Directory to save the plot if save_plots is True. Default is './'
+    ax_in : matplotlib.axes.Axes, optional
+        Matplotlib axis to plot on. If None, a new figure and axes are created.
+
+    Returns
+    -------
+    None
+    """
+
+    # Create figure and axes
+    if ax_in is None:
+        fig, ax = plt.subplots(1, 1, figsize=(6, 4), facecolor='w')
+    else:
+        ax = ax_in
+    # Plot data with shaded region for errors
+    ax.plot(wave, spec, drawstyle='steps-mid', label='Data', color='black', alpha=0.7)
+    ax.fill_between(wave, spec - spec_err, spec + spec_err, color='grey', alpha=0.25, step='mid')
+
+    # Plot best-fit model at high resolution
+    hires_wave = np.linspace(np.min(wave), np.max(wave), 1000)
+    model_spec = func(hires_wave, *popt)
+    ax.plot(hires_wave, model_spec, label='Best-fit Model', color='red', linestyle='--', alpha=0.8)
+    # Labels and legend
+    ax.set_ylabel('Flux')
+    ax.legend()
+    ax.set_title('Lyman Alpha Fit')
+
+    # Axis labels
+    ax.set_xlabel(r'Wavelength (\AA)')
+    ax.set_ylabel('Flux Density')
+
+    plt.tight_layout()
+
+    # Save plot if requested
+    if save_plots:
+        if not os.path.exists(plot_dir):
+            os.makedirs(plot_dir)
+        plot_path = os.path.join(plot_dir, 'lya_fit.png')
+        plt.savefig(plot_path, dpi=250)
+        print(f'Lyman alpha fit plot saved to {plot_path}')
+
+    plt.show()
+    plt.close()
+
+def plot_line_fit(wave, spec, spec_err, popt, func, line_name, save_plots=False, plot_dir='./', ax_in=None, method='single'):
+    """
+    Plot the spectral line fit results along with the data.
+
+    Parameters
+    ----------
+    wave : array-like
+        Wavelength array of the spectrum.
+    spec : array-like
+        Flux array of the spectrum.
+    spec_err : array-like
+        Error array of the spectrum.
+    popt : array-like
+        Optimal fit parameters from the fitting procedure.
+    func : callable
+        The model function used for fitting.
+    line_name : str
+        Name of the spectral line being fitted.
+    save_plots : bool, optional
+        Whether to save the plot to disk. Default is False.
+    plot_dir : str, optional
+        Directory to save the plot if save_plots is True. Default is './'
+    ax_in : matplotlib.axes.Axes, optional
+        Matplotlib axis to plot on. If None, a new figure and axes are created.
+    method : str, optional
+        Fitting method: 'single' for single line, 'doublet' for doublet line. Default is 'single'.
+
+    Returns
+    -------
+    None
+    """
+
+    # Create figure and axes
+    if ax_in is None:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 5), facecolor='w')
+    else:
+        ax = ax_in
+
+    # Plot data with shaded region for errors
+    ax.plot(wave, spec, drawstyle='steps-mid', label='Fitted Data', color='black', alpha=0.7)
+    ax.fill_between(wave, spec - spec_err, spec + spec_err, color='grey', alpha=0.5, step='mid')
+
+    # Generate a finely sampled wavelength array for plotting the model
+    hires_wave = np.linspace(np.min(wave), np.max(wave), 1000)
+    
+    # Plot model based on method
+    if method == 'doublet':
+        # For doublets, we need to extract the wavelength ratio from the model function
+        # The doublet model is created as gaussian_doublet(rest_ratio)
+        # We can infer the ratio from the fitted parameters (popt[1] vs popt[1]*rest_ratio)
+        # Or we can call the full model and plot components separately
+        
+        # Plot total model
+        model_spec = func(hires_wave, *popt)
+        ax.plot(hires_wave, model_spec, color='red', label='Doublet Fit', lw=2)
+        
+        # Plot individual components
+        # Primary component: uses popt[0] (flux), popt[1] (center), popt[2] (fwhm)
+        primary_comp = models.gaussian(hires_wave, popt[0], popt[1], popt[2], 0, 0)
+        ax.plot(hires_wave, primary_comp, color='orange', ls='--', label='Primary Component')
+        
+        # Secondary component: uses popt[3] (flux2), and we need to get the wavelength ratio
+        # The secondary wavelength is embedded in the doublet model
+        # We can extract it by looking at where func was created with gaussian_doublet(rest_ratio)
+        # For now, we'll compute it from the closure or pass it explicitly
+        # Actually, we can get it from the function's closure
+        if hasattr(func, '__closure__') and func.__closure__:
+            # Extract rest_ratio from the closure
+            rest_ratio = func.__closure__[0].cell_contents
+            secondary_comp = models.gaussian(hires_wave, popt[3], popt[1]*rest_ratio, popt[2], 0, 0)
+            ax.plot(hires_wave, secondary_comp, color='green', ls='--', label='Secondary Component')
+    else:
+        # Single line fit
+        model_spec = func(hires_wave, *popt)
+        ax.plot(hires_wave, model_spec, color='red', label='Single Line Fit', lw=2)
+
+    # Labels and legend
+    ax.set_xlabel(r'Wavelength (\AA)')
+    ax.set_ylabel('Flux Density')
+    ax.set_title(f'Fit to {line_name} Line')
+    ax.legend()
+
+    plt.tight_layout()
+
+    # Save plot if requested
+    if save_plots:
+        if not os.path.exists(plot_dir):
+            os.makedirs(plot_dir)
+        plot_path = os.path.join(plot_dir, f'{line_name}_fit.png')
+        plt.savefig(plot_path, dpi=250)
+        print(f'{line_name} fit plot saved to {plot_path}')
+
+    # Show and close if no axis was provided
+    if ax_in is None:
+        plt.show()
+        plt.close()
