@@ -17,9 +17,9 @@ det_types = {
     'P': 'PRIOR'
 }
 
-def optimise_aperture(cube, ra, dec, full_iden, zlya, cluster, kwargs={"nstruct":3, "niter":1}):
+def optimise_aperture(cube, ra, dec, full_iden, zlya, cluster, method='lya', kwargs={"nstruct":2, "niter":1}):
     """
-    Optimises the aperture position by centering it on the peak of Lyman-alpha emission
+    Optimises the aperture position for a source based on the specified method.
 
     Parameters
     ----------
@@ -35,6 +35,8 @@ def optimise_aperture(cube, ra, dec, full_iden, zlya, cluster, kwargs={"nstruct"
         Redshift of the Lyman-alpha line.
     cluster : str
         Name of the cluster.
+    method : str, optional
+        Method for aperture optimisation. Default is 'lya'.
     kwargs : dict
         Additional keyword arguments for the peak_detection method: nstruct, niter
 
@@ -49,6 +51,47 @@ def optimise_aperture(cube, ra, dec, full_iden, zlya, cluster, kwargs={"nstruct"
     lya_rest = wavedict['LYALPHA']  # Angstroms
     lya_obs = lya_rest * (1 + zlya)
 
+    ra_opt, dec_opt = ra, dec
+
+    if method == 'lya':
+        print(f"Optimising aperture for source ID {full_iden} using Lyman-α peak detection.")
+        ra_opt, dec_opt = find_lya_peak(cube, ra, dec, zlya, cluster, kwargs=kwargs)
+    elif method == 'segmap':
+        print(f"Optimising aperture for source ID {full_iden} using brightest continuum peak in segmentation map.")
+        # Load segmentation map for the cluster
+        seg_map = io.load_segmentation_map(cluster)
+        ra_opt, dec_opt = imp.get_segmap_peak(seg_map, ra, dec)
+    else:
+        print(f"Warning: Unknown optimisation method '{method}'. Using original coordinates.")
+    
+    print(f"Optimised aperture position for source ID {full_iden}: RA={ra_opt}, DEC={dec_opt}")
+    return ra_opt, dec_opt
+
+def find_lya_peak(cube, ra, dec, zlya, kwargs={"nstruct":2, "niter":1}):
+    """
+    Finds the peak of Lyman-alpha emission in a narrowband image around the Lyman-alpha line.
+    
+    Parameters
+    ----------
+    cube : mpdaf.obj.Cube
+        The MUSE data cube.
+    ra : float
+        Right Ascension of the source.
+    dec : float
+        Declination of the source.
+    zlya : float
+        Redshift of the Lyman-alpha line.
+    kwargs : dict
+        Additional keyword arguments for the peak_detection method: nstruct, niter
+
+    Returns
+    -------
+    tuple
+        Optimised (RA, DEC) coordinates based on Lyman-alpha peak.
+    """
+    lya_rest = wavedict['LYALPHA']  # Angstroms
+    lya_obs = lya_rest * (1 + zlya)
+
     # Extract narrowband image around Lyman-alpha line, using a 2.5 Angstrom bandwidth and 10 Angstrom
     # bands for the continuum, separated by 10 Angstrom margin from the line
     lya_nb_img = cube.get_image((lya_obs-1.25, lya_obs+1.25), subtract_off=True, margin=10, fband=4)
@@ -57,13 +100,13 @@ def optimise_aperture(cube, ra, dec, full_iden, zlya, cluster, kwargs={"nstruct"
     lya_nb_img = lya_nb_img.subimage(center=(dec, ra), size=5.0)
 
     # Find the 3 sigma threshold for peak detection using the .var extension of the image
-    threshold = 3 * np.sqrt(lya_nb_img.var.data)
+    threshold = 2 * np.sqrt(lya_nb_img.var.data)
 
     # Find peak positions in the narrowband image in pixel coordinates
     peak_locs = lya_nb_img.peak_detection(**kwargs, threshold=threshold)
     # If no peaks found, return original coordinates and raise a warning
     if len(peak_locs) == 0:
-        print(f"Warning: No peaks found for source ID {full_iden} during aperture optimisation. "
+        print(f"Warning: No peaks found during aperture optimisation. "
               "Using original coordinates.")
         return ra, dec
     
@@ -75,8 +118,6 @@ def optimise_aperture(cube, ra, dec, full_iden, zlya, cluster, kwargs={"nstruct"
     closest_peak_idx = np.argmin(separations)
     closest_peak = peak_locs_world[closest_peak_idx]
     ra_opt, dec_opt = closest_peak[1], closest_peak[0]
-
-    print(f"Optimised aperture position for source ID {full_iden}: RA={ra_opt}, DEC={dec_opt}")
     return ra_opt, dec_opt
 
 def extract_spectra(source_cat, aper_size, cluster_name, overwrite=False, optimise_apertures=False):
@@ -87,7 +128,7 @@ def extract_spectra(source_cat, aper_size, cluster_name, overwrite=False, optimi
     ----------
     source_cat : list of dict
         List of source dictionaries containing source information.
-    aper_size : float
+    aper_size : int
         Aperture size in FWHM for spectrum extraction.
     cluster_name : str
         Name of the cluster (e.g., 'A2744').
@@ -109,8 +150,8 @@ def extract_spectra(source_cat, aper_size, cluster_name, overwrite=False, optimi
         idfrom = source['idfrom']
         spec_path = io.get_aper_spectra_dir(cluster_name)
         full_iden = f"{idfrom[0].replace('E', 'X')}{iden}"
-        spec_type = f"{full_iden}_{aper_size}fwhm" + ("_opt" if optimise_apertures else "")
-        spec_file = Path(spec_path) / f"{spec_type}.fits"
+        spec_name = f"{full_iden}_{aper_size}fwhm" + ("_opt" if optimise_apertures else "")
+        spec_file = Path(spec_path) / f"{spec_name}.fits"
         if not spec_file.exists() or overwrite:
             missing_sources.append((source, spec_file, full_iden))
         else:
@@ -124,8 +165,8 @@ def extract_spectra(source_cat, aper_size, cluster_name, overwrite=False, optimi
     # Only load the cube if needed
     cube = io.load_muse_cube(cluster_name)
     for source, spec_file, full_iden in missing_sources:
-        ra = source['ra']
-        dec = source['dec']
+        ra = source['RA']
+        dec = source['DEC']
         # If optimise_apertures is True, center the aperture on the peak flux position within the
         # segmentation map of the source
         ra_opt, dec_opt = ra, dec

@@ -702,7 +702,7 @@ class BootstrapParams(TypedDict, total=False):
     max_nfev: int
 
 
-def get_initial_guesses(linetab, linename):
+def get_initial_guesses_from_catalog(linetab, linename):
     """
     Extract initial guesses for fitting parameters from a line table.
 
@@ -749,15 +749,15 @@ def get_initial_guesses(linetab, linename):
         }
     elif linename in doubletdict:
         initial_guesses = {
-            'FLUX': linerow['FLUX'] / 5,  # integrated flux of primary line with correction factor
+            'FLUX': linerow['FLUX'],  # integrated flux of primary line with correction factor
             'LPEAK': linerow['LBDA_OBS'], # peak wavelength
             'FWHM': linerow['FWHM_OBS'], # fwhm
-            'FLUX2': sec_linerow['FLUX'] / 5, # flux ratio of second line to first with correction factor
+            'FLUX2': sec_linerow['FLUX'], # flux ratio of second line to first with correction factor
             'CONT': linerow['CONT_OBS'], # continuum level
         }
     else:
         initial_guesses = {
-            'FLUX': linerow['FLUX'] / 5,  # integrated flux with correction factor
+            'FLUX': linerow['FLUX'],  # integrated flux with correction factor
             'LPEAK': linerow['LBDA_OBS'], # peak wavelength
             'FWHM': linerow['FWHM_OBS'], # fwhm
             'CONT': linerow['CONT_OBS'], # continuum level
@@ -834,7 +834,8 @@ def prep_inputs(initial_guesses, linename, z_lya, bounds={}):
             if lower >= upper:
                 raise ValueError(f"Lower bound must be less than upper bound for {param}: {bounds[param]}")
             if not (lower <= value <= upper):
-                warnings.warn(f"Initial guess for {param} ({value}) is outside bounds {bounds[param]}; adjusting to midpoint.")
+                warnings.warn(f"Initial guess for {param} ({value}) is outside bounds {bounds[param]};"
+                               "adjusting to midpoint.")
                 initial_guesses[param] = (lower + upper) / 2.0
 
     return initial_guesses, bounds
@@ -878,16 +879,18 @@ def check_inputs(p0, bounds):
             if np.isinf(lower) or np.isinf(upper):
                 # Handle infinite bounds
                 if np.isinf(lower) and np.isinf(upper):
-                    val = 0.0  # Both infinite, use 0
+                    val_new = 0.0  # Both infinite, use 0
                 elif np.isinf(lower):
-                    val = upper * 0.5 if upper > 0 else upper - 100
+                    val_new = upper * 0.5 if upper > 0 else upper - 100
                 else:  # upper is inf
-                    val = lower * 0.5 if lower < 0 else lower + 100
+                    val_new = lower * 0.5 if lower < 0 else lower + 100
             else:
-                val = (lower + upper) / 2.0
-            print(f"WARNING: Initial guess {i} is NaN; adjusting to {val:.3e}")
+                val_new = (lower + upper) / 2.0
+            print(f"WARNING: Initial guess {i} is NaN; adjusting to {val_new:.3e}")
+            val = val_new
         elif not (lower <= val <= upper):
             # Out of bounds - use midpoint or adjust slightly inside bounds
+            original_val = val
             if np.isinf(lower) or np.isinf(upper):
                 if np.isinf(lower):
                     val = upper * 0.9 if upper != 0 else upper - 0.1
@@ -895,15 +898,83 @@ def check_inputs(p0, bounds):
                     val = lower * 1.1 if lower != 0 else lower + 0.1
             else:
                 val = (lower + upper) / 2.0
-            print(f"WARNING: Initial guess {val} is outside bounds ({lower}, {upper}); adjusting to {val:.3e}")
+            print(f"WARNING: Initial guess {original_val} is outside bounds ({lower}, {upper}); adjusting to {val:.3e}")
             
         p0_checked.append(val)
     return p0_checked, bounds
-        
+
+
+def condition_initial_guesses(initial_guesses, wavelength, spectrum, errors, linename):    
+    """
+    Condition initial guesses for fitting parameters based on actual data.
+
+    Parameters
+    ----------
+    initial_guesses : dict
+        Dictionary of initial guesses for parameters.
+    wavelength : array-like
+        Wavelength array.
+    spectrum : array-like
+        Flux density array.
+    errors : array-like
+        Flux density uncertainties.
+    linename : str
+        Name of the line being fitted.
+
+    Returns
+    -------
+    initial_guesses : dict
+        Conditioned initial guesses.
+
+    Notes
+    -----
+    - Adjusts initial guesses based on the actual data in the fitting region.
+    - Ensures initial guesses are within reasonable bounds.
+
+    Examples
+    --------
+    >>> condition_initial_guesses({'LPEAK': 5000, 'FLUX': 10}, wavelength, spectrum, errors, 'CIV')
+    """
+    # Get initial guess for LPEAK
+    lpeak_init = initial_guesses['LPEAK']
+
+    # Define a fitting region around LPEAK
+    fit_region = (lpeak_init - 25 < wavelength) & (wavelength < lpeak_init + 25)
+    if fit_region.sum() < 3:
+        print(f"Not enough data points around initial LPEAK ({lpeak_init}) to condition guesses.")
+        return initial_guesses
+
+    wl_fit = wavelength[fit_region]
+    spec_fit = spectrum[fit_region]
+    err_fit = errors[fit_region]
+
+    # Adjust continuum initial guess based on median of fitting region
+    if 'CONT' in initial_guesses:
+        cont_init = np.nanmedian(spec_fit)
+        initial_guesses['CONT'] = cont_init
+
+    # Adjust FLUX initial guess based on height of the tallest peak in the fitting region
+    if 'FLUX' in initial_guesses:
+        flux_init = initial_guesses['FLUX']
+        if flux_init > 0: # Emission line
+            peak_flux = np.max(spec_fit - np.nanmedian(spec_fit))
+        else: # Absorption line
+            peak_flux = np.min(spec_fit - np.nanmedian(spec_fit))
+        # Estimate integrated flux as peak_flux * FWHM (assuming Gaussian shape)
+        if 'FWHM' in initial_guesses:
+            fwhm_init = initial_guesses['FWHM']
+        else:
+            fwhm_init = 3.0  # Default guess if FWHM not provided
+        flux_estimate = peak_flux * fwhm_init * (np.sqrt(2 * np.pi) / 2.355)  # Convert peak to integrated flux
+        initial_guesses['FLUX'] = flux_estimate
+
+    return initial_guesses
+
 
 def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {},
              continuum_buffer = 25., plot_result = True, ax_in = None,
-             bootstrap_params: Optional[BootstrapParams] = None, save_plots=False, plot_dir=None):
+             bootstrap_params: Optional[BootstrapParams] = None, save_plots=False, plot_dir=None,
+             spec_type='aper'):
     """
     Fit a single or double Gaussian profile to a spectral line (plus its doublet partner if present).
     If the line is Lyman alpha, raises an error (use specialized function).
@@ -935,6 +1006,8 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
         If True, saves the plot to a file (default: False).
     plot_dir : str, optional
         Directory to save plots if save_plots is True.
+    spec_type : str, optional
+        Type of spectrum being fitted (for labeling purposes, default: 'aper').
 
     Returns
     -------
@@ -955,21 +1028,8 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
     if linename == 'LYALPHA':
         raise ValueError("Use specialized Lyman-alpha fitting function.")
 
-    # Get initial guesses
+    # Get initial guess for flux (this is required to set up the fitting region)
     lpeak_init      = initial_guesses['LPEAK']
-    flux_init       = initial_guesses.get('FLUX', 10)
-    fluxsecond_init = initial_guesses.get('FLUX2', flux_init) # this will be used if fitting a doublet
-    fwhm_init       = initial_guesses.get('FWHM', 3.0)
-    cont_init       = initial_guesses.get('CONT', 0)
-    slope_init      = initial_guesses.get('SLOPE', 0)
-
-    # Get bounds
-    lpeak_bounds = bounds.get('LPEAK', (lpeak_init - 6.25, lpeak_init + 6.25))
-    flux_bounds = bounds.get('FLUX', (0, np.inf))
-    fluxsecond_bounds = bounds.get('FLUX2', (0, np.inf)) # this will be used if fitting a doublet
-    fwhm_bounds = bounds.get('FWHM', (2.4, (300 / c) * lpeak_init))
-    cont_bounds = bounds.get('CONT', (-np.inf, np.inf))
-    slope_bounds = bounds.get('SLOPE', (-np.inf, np.inf))
 
     # Determine whether to fit as a single line or doublet
     method = which_fit_method(linename)
@@ -1010,6 +1070,25 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
     wl_fit   = wavelength[fit_mask]
     spec_fit = spectrum[fit_mask]
     err_fit  = errors[fit_mask]
+
+    # Condition initial guesses using the actual data
+    initial_guesses = condition_initial_guesses(initial_guesses, wl_fit, spec_fit, err_fit, linename)
+
+    # Get initial guesses
+    flux_init       = initial_guesses.get('FLUX', 10)
+    fluxsecond_init = initial_guesses.get('FLUX2', flux_init) # this will be used if fitting a doublet
+    fwhm_init       = initial_guesses.get('FWHM', 3.0)
+    cont_init       = initial_guesses.get('CONT', 0)
+    slope_init      = initial_guesses.get('SLOPE', 0)
+
+    # Get bounds
+    lpeak_bounds = bounds.get('LPEAK', (lpeak_init - 6.25, lpeak_init + 6.25))
+    flux_bounds = bounds.get('FLUX', (-100 * np.abs(flux_init), 100 * np.abs(flux_init)))
+    fluxsecond_bounds = bounds.get('FLUX2', (-100 * np.abs(fluxsecond_init), 100 * np.abs(fluxsecond_init))) # this will be used if fitting a doublet
+    fwhm_bounds = bounds.get('FWHM', (2.4, (300 / c) * lpeak_init)) # approximately 300 km/s upper limit
+    cont_bounds = bounds.get('CONT', (-50, 1000))
+    slope_bounds = bounds.get('SLOPE', (-np.inf, np.inf))
+
 
     # Initialise fit result dictionary that the function will return
     fit_result = {}
@@ -1219,7 +1298,9 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
             save_plots=save_plots,
             plot_dir=plot_dir if plot_dir is not None else './',
             ax_in=ax_in,
-            method=method
+            method=method,
+            spec_type=spec_type,
+            initial_guesses=initg
         )
         
         # Note: plot_line_fit now handles show/close internally when ax_in is None

@@ -122,7 +122,7 @@ def fit_lya_complete(wave, spec, spec_err, row, width=50, plot_result = True,
     return best_fit
 
 def fit_lya_line(wave, spec, spec_err, initial_guesses, bounds='auto', width=50,
-                 plot_result=False, save_plots=False, plot_dir='./'):
+                 plot_result=False, save_plots=False, plot_dir='./', ax_in=None, spec_type='aper'):
     """
     Fit the Lyman alpha line with a constant baseline using specified initial parameters.
 
@@ -138,6 +138,10 @@ def fit_lya_line(wave, spec, spec_err, initial_guesses, bounds='auto', width=50,
         Dictionary of initial guesses for the fit parameters.
     bounds : tuple or 'auto', optional
         Bounds for parameters. If 'auto', default bounds are used based on initial guesses.
+    width : float, optional
+        Width around the line center to consider for fitting (default is 50).
+    spec_type : str, optional
+        Type of spectrum being fitted (for labeling purposes, default: 'aper').
 
     Returns
     -------
@@ -236,7 +240,7 @@ def fit_lya_line(wave, spec, spec_err, initial_guesses, bounds='auto', width=50,
         # If plotting is requested, do it here
         if plot_result:
             plot.plot_lya_fit(wave[fitmask], spec[fitmask], spec_err[fitmask], popt_double, best_mdl_func,
-                             save_plots=save_plots, plot_dir=plot_dir)
+                             save_plots=save_plots, plot_dir=plot_dir, ax_in=ax_in, spec_type=spec_type)
 
         # Build and return fit_result dictionary
         return {
@@ -284,6 +288,11 @@ def fit_lya_line(wave, spec, spec_err, initial_guesses, bounds='auto', width=50,
             fit_results[name] = popt_single[i]
             err_results[name] = perr_single[i]
         print("Single-peaked fit successful.")
+
+        # If plotting is requested, do it here
+        if plot_result:
+            plot.plot_lya_fit(wave[fitmask], spec[fitmask], spec_err[fitmask], popt_single, mdl_func_single,
+                             save_plots=save_plots, plot_dir=plot_dir, ax_in=ax_in, spec_type=spec_type)
         
         # Build and return fit_result dictionary
         return {

@@ -14,7 +14,7 @@ import astropy.table as aptb
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
-from mpdaf import Cube
+from mpdaf.obj import Cube
 
 def get_r21_cat_url():
     """
@@ -496,8 +496,13 @@ def load_aper_spec(clus, iden, idfrom, spectype = '2fwhm'):
     astropy.table.Table or None
         The loaded spectrum table, or None if loading failed.
     """
-    # For aperture spectra, use iden directly (already in correct format)
-    identifier = iden
+    # Generate the full identifier
+    if iden[0].isdigit():
+        identifier = (idfrom[0] + str(iden)).replace('E', 'X')
+    elif iden[0].isalpha():
+        identifier = iden
+    else:
+        raise ValueError("iden must start with a letter or digit")
 
     print(f"Loading aperture spectrum for {clus} object {identifier}...")
 
@@ -583,13 +588,13 @@ def load_muse_cube(clus):
     FileNotFoundError
         If the MUSE cube file cannot be found.
     """
-    cube_path = get_muse_cube_dir(clus) / f"{clus}_MUSE_cube.fits"
+    cube_path = list(get_muse_cube_dir(clus).glob(f"DATACUBE*.fits"))
 
-    if not os.path.isfile(cube_path):
-        raise FileNotFoundError(f"MUSE cube file not found: {cube_path}")
+    if len(cube_path) == 0:
+        raise FileNotFoundError(f"MUSE cube file not found for cluster {clus}")
 
     try:
-        return Cube(str(cube_path))
+        return Cube(str(cube_path[0]))
     except Exception as e:
         raise FileNotFoundError(f"Error loading MUSE cube: {e}")
     
@@ -601,12 +606,12 @@ def save_spectrum(spectrum, spec_file):
 
     Parameters
     ----------
-    spectrum : mpdaf.obj.Spectrum or astropy.table.Table
+    spectrum : mpdaf.obj.Spectrum (or similar) or astropy.table.Table
         The extracted spectrum object.
     spec_file : str or Path
         The file path where the spectrum will be saved.
     """
-    if 'mpdaf.obj.Spectrum' in str(type(spectrum)):
+    if 'mpdaf' in str(type(spectrum)):
         # Convert MPDAF Spectrum to astropy Table
         wave = spectrum.wave.coord()
         spec = spectrum.data

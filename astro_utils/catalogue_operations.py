@@ -185,7 +185,7 @@ def get_muse_cand(iden, clus):
         iden = iden[:-2] # Just remove the '55' at the end
 
     # Get the relevant cluster line table
-    linetab = io.load_r21_catalogue(clus)
+    linetab = io.load_r21_catalogue(clus, type='line')
 
     # Generate a column of full identifiers
     full_idens = np.array([x['idfrom'][0].replace('E','X') + str(x['iden']) for x in linetab])
@@ -211,7 +211,7 @@ def get_muse_cand(iden, clus):
         return rows[goodrows]
     
 
-def get_line_table(iden, clus):
+def get_line_table(iden, clus, exclude_lya=True):
     """
     Get a table of emission lines from the R21 catalogue for a given source.
 
@@ -241,7 +241,8 @@ def get_line_table(iden, clus):
     line_table = aptb.unique(candidate_line_table, keys='LINE')
 
     # Get rid of Lyman alpha as we have already fit that
-    line_table = line_table[line_table['LINE'] != 'LYALPHA']
+    if exclude_lya:
+        line_table = line_table[line_table['LINE'] != 'LYALPHA']
     
     return line_table
     

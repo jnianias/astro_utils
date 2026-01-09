@@ -242,7 +242,7 @@ def lya_mod_plot(row, axin, eml=False):
               color='maroon', alpha=0.6, label=r"model", linestyle='--')
     
 
-def plot_lya_fit(wave, spec, spec_err, popt, func, save_plots=False, plot_dir='./', ax_in=None):
+def plot_lya_fit(wave, spec, spec_err, popt, func, save_plots=False, plot_dir='./', ax_in=None, spec_type='aper'):
     """
     Plot the Lyman alpha fit results along with the data.
 
@@ -264,6 +264,8 @@ def plot_lya_fit(wave, spec, spec_err, popt, func, save_plots=False, plot_dir='.
         Directory to save the plot if save_plots is True. Default is './'
     ax_in : matplotlib.axes.Axes, optional
         Matplotlib axis to plot on. If None, a new figure and axes are created.
+    spec_type : str, optional
+        Type of spectrum being plotted (e.g., 'aper' for aperture). Used in filename if saving. Default is 'aper'.
 
     Returns
     -------
@@ -277,7 +279,7 @@ def plot_lya_fit(wave, spec, spec_err, popt, func, save_plots=False, plot_dir='.
         ax = ax_in
     # Plot data with shaded region for errors
     ax.plot(wave, spec, drawstyle='steps-mid', label='Data', color='black', alpha=0.7)
-    ax.fill_between(wave, spec - spec_err, spec + spec_err, color='grey', alpha=0.25, step='mid')
+    ax.fill_between(wave, spec - spec_err, spec + spec_err, color='grey', alpha=0.5, step='mid')
 
     # Plot best-fit model at high resolution
     hires_wave = np.linspace(np.min(wave), np.max(wave), 1000)
@@ -286,7 +288,7 @@ def plot_lya_fit(wave, spec, spec_err, popt, func, save_plots=False, plot_dir='.
     # Labels and legend
     ax.set_ylabel('Flux')
     ax.legend()
-    ax.set_title('Lyman Alpha Fit')
+    ax.set_title('Lyman-α Fit')
 
     # Axis labels
     ax.set_xlabel(r'Wavelength (\AA)')
@@ -298,14 +300,15 @@ def plot_lya_fit(wave, spec, spec_err, popt, func, save_plots=False, plot_dir='.
     if save_plots:
         if not os.path.exists(plot_dir):
             os.makedirs(plot_dir)
-        plot_path = os.path.join(plot_dir, 'lya_fit.png')
+        plot_path = os.path.join(plot_dir, f'LYALPHA_fit_{spec_type}.png')
         plt.savefig(plot_path, dpi=250)
         print(f'Lyman alpha fit plot saved to {plot_path}')
 
     plt.show()
     plt.close()
 
-def plot_line_fit(wave, spec, spec_err, popt, func, line_name, save_plots=False, plot_dir='./', ax_in=None, method='single'):
+def plot_line_fit(wave, spec, spec_err, popt, func, line_name, save_plots=False, plot_dir='./', ax_in=None, 
+                  method='single', spec_type='aper', initial_guesses=None):
     """
     Plot the spectral line fit results along with the data.
 
@@ -331,6 +334,10 @@ def plot_line_fit(wave, spec, spec_err, popt, func, line_name, save_plots=False,
         Matplotlib axis to plot on. If None, a new figure and axes are created.
     method : str, optional
         Fitting method: 'single' for single line, 'doublet' for doublet line. Default is 'single'.
+    spec_type : str, optional
+        Type of spectrum being plotted (e.g., 'aper' for aperture). Used in filename if saving. Default is 'aper'.
+    initial_guesses : list, optional
+        Initial guesses used for fitting, for reference in the plot.  Default is None.
 
     Returns
     -------
@@ -360,6 +367,10 @@ def plot_line_fit(wave, spec, spec_err, popt, func, line_name, save_plots=False,
         # Plot total model
         model_spec = func(hires_wave, *popt)
         ax.plot(hires_wave, model_spec, color='red', label='Doublet Fit', lw=2)
+        # Plot initial guesses if provided
+        if initial_guesses is not None:
+            init_model_spec = func(hires_wave, *initial_guesses)
+            ax.plot(hires_wave, init_model_spec, color='tab:blue', ls=':', label='Initial Guess', lw=1, alpha=0.5)
         
         # Plot individual components
         # Primary component: uses popt[0] (flux), popt[1] (center), popt[2] (fwhm)
@@ -368,9 +379,7 @@ def plot_line_fit(wave, spec, spec_err, popt, func, line_name, save_plots=False,
         
         # Secondary component: uses popt[3] (flux2), and we need to get the wavelength ratio
         # The secondary wavelength is embedded in the doublet model
-        # We can extract it by looking at where func was created with gaussian_doublet(rest_ratio)
-        # For now, we'll compute it from the closure or pass it explicitly
-        # Actually, we can get it from the function's closure
+        # We can get it from the function's closure
         if hasattr(func, '__closure__') and func.__closure__:
             # Extract rest_ratio from the closure
             rest_ratio = func.__closure__[0].cell_contents
@@ -380,6 +389,10 @@ def plot_line_fit(wave, spec, spec_err, popt, func, line_name, save_plots=False,
         # Single line fit
         model_spec = func(hires_wave, *popt)
         ax.plot(hires_wave, model_spec, color='red', label='Single Line Fit', lw=2)
+        # Plot initial guesses if provided
+        if initial_guesses is not None:
+            init_model_spec = func(hires_wave, *initial_guesses)
+            ax.plot(hires_wave, init_model_spec, color='tab:blue', ls=':', label='Initial Guess', lw=1, alpha=0.5)
 
     # Labels and legend
     ax.set_xlabel(r'Wavelength (\AA)')
@@ -393,7 +406,7 @@ def plot_line_fit(wave, spec, spec_err, popt, func, line_name, save_plots=False,
     if save_plots:
         if not os.path.exists(plot_dir):
             os.makedirs(plot_dir)
-        plot_path = os.path.join(plot_dir, f'{line_name}_fit.png')
+        plot_path = os.path.join(plot_dir, f'{line_name}_fit_{spec_type}.png')
         plt.savefig(plot_path, dpi=250)
         print(f'{line_name} fit plot saved to {plot_path}')
 
