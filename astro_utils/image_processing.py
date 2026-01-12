@@ -257,7 +257,7 @@ def show_segmentation_mask(row, ax_in, return_cutout = False, size = 'auto', dow
         if return_cutout:
             return cutout # returns the cutout object containing vital WCS info
         
-def get_segmap_peak(seg_map, full_iden, ra, dec, cluster):
+def get_segmap_peak(full_iden, cluster, seg_map=None, weight_map=None):
     """
     Finds the brightest pixel in the segmentation map for the given source ID. If no segmentation map is found
     for the source ID, this may be due to the source being a composite source, where multiple adjacent segmentation
@@ -266,16 +266,14 @@ def get_segmap_peak(seg_map, full_iden, ra, dec, cluster):
     
     Parameters
     ----------
-    seg_map : numpy.ndarray
-        2D array representing the segmentation map.
     full_iden : str
         Full identifier of the source (e.g., 'P1234' or 'M5678').
-    ra : float
-        Right Ascension of the source in the catalog (degrees).
-    dec : float
-        Declination of the source in the catalog (degrees).
     cluster : str
         Name of the cluster.
+    seg_map : astropy.io.fits.HDUList, optional
+        Pre-loaded segmentation map HDUList. If None, the function will load it.
+    weight_map : astropy.io.fits.HDUList, optional
+        Pre-loaded weight map HDUList. If None, the function will load it.
     
     Returns
     -------
@@ -293,6 +291,10 @@ def get_segmap_peak(seg_map, full_iden, ra, dec, cluster):
 
     idno = int(''.join(filter(str.isdigit, full_iden))) # Extract numeric part of id
 
+    # Load segmentation map if not provided
+    if seg_map is None:
+        seg_map = io.load_segmentation_map(cluster)
+
     # Load the segmentation map data
     if 'DATA' in seg_map:
         segmap_data = seg_map['DATA'].data
@@ -305,10 +307,18 @@ def get_segmap_peak(seg_map, full_iden, ra, dec, cluster):
     
     # Load source catalog to check which IDs exist
     source_cat = io.load_r21_catalogue(cluster, type='source')
+    source_cat = source_cat[source_cat['idfrom'] == 'PRIOR'] # Filter for prior-detected sources only
+
+    # Get coordinate of the source from the catalog
+    source_row = source_cat[source_cat['iden'] == idno]
+    if len(source_row) == 0:
+        raise ValueError(f"Source ID {full_iden} not found in R21 source catalog for cluster {cluster}.")
+    ra = source_row['RA'][0]
+    dec = source_row['DEC'][0]
+
     catalog_ids = set()
-    for row in source_cat:
-        if row['iden'].startswith('P'):
-            catalog_ids.add(int(''.join(filter(str.isdigit, row['iden']))))
+    for row in source_cat: # add all IDs in the catalog to a set
+        catalog_ids.add(int(row['iden']))
     
     # Check if the ID exists in the segmentation map
     if idno > np.nanmax(segmap_data):
@@ -317,17 +327,15 @@ def get_segmap_peak(seg_map, full_iden, ra, dec, cluster):
         print(f"Source appears to be a composite. Attempting to reconstruct composite region.")
         
         # Find pixel coordinates of the source position
-        pix_coords = wcs.world_to_pixel(SkyCoord(ra=ra*u.deg, dec=dec*u.deg))
+        pix_coords = wcs.world_to_pixel(SkyCoord(ra=ra, dec=dec, unit='deg'))
         x_pix, y_pix = int(pix_coords[0]), int(pix_coords[1])
+
+        # Check to make sure within array bounds
+        if not (0 <= x_pix < segmap_data.shape[1]) or not (0 <= y_pix < segmap_data.shape[0]):
+            print(f"Error: Source position {ra}, {dec} is out of bounds for segmentation map of cluster {cluster}.")
+            return ra, dec
         
-        # Define a search region around the source position
-        search_radius = 50  # pixels
-        y_min = max(0, y_pix - search_radius)
-        y_max = min(segmap_data.shape[0], y_pix + search_radius)
-        x_min = max(0, x_pix - search_radius)
-        x_max = min(segmap_data.shape[1], x_pix + search_radius)
-        
-        search_region = segmap_data[y_min:y_max, x_min:x_max]
+        search_region = segmap_data # Search entire segmentation map
         
         # Find unique IDs in the search region
         unique_ids = np.unique(search_region[search_region > 0])
@@ -351,39 +359,62 @@ def get_segmap_peak(seg_map, full_iden, ra, dec, cluster):
         # Label connected components to find groups of adjacent regions
         labeled_array, num_features = label(composite_mask)
         
-        # Find which labeled region contains or is nearest to the source position
-        if 0 <= y_pix < segmap_data.shape[0] and 0 <= x_pix < segmap_data.shape[1]:
-            label_at_position = labeled_array[y_pix, x_pix]
+        # Filter for composite regions that contain MORE THAN ONE segmentation ID
+        composite_regions = []
+        for label_id in range(1, num_features + 1):
+            labeled_region_mask = (labeled_array == label_id)
+            # Find which candidate IDs are in this labeled region
+            ids_in_region = [int(uid) for uid in candidate_ids if np.any(labeled_region_mask & (segmap_data == uid))]
             
-            if label_at_position == 0:
-                # Source position is not in any candidate region
-                # Find the nearest labeled region
-                distances = []
-                for label_id in range(1, num_features + 1):
-                    ys, xs = np.where(labeled_array == label_id)
-                    # Calculate minimum distance to this region
-                    min_dist = np.min(np.sqrt((xs - x_pix)**2 + (ys - y_pix)**2))
-                    distances.append((min_dist, label_id))
-                
-                if distances:
-                    _, label_at_position = min(distances)
-                    print(f"Source position not in candidate regions. Using nearest region (label {label_at_position}).")
-                else:
-                    print(f"Warning: Could not find any labeled regions.")
-                    return ra, dec
-            
-            # Use the identified labeled region as the composite segmentation region
-            composite_region = (labeled_array == label_at_position)
-            
-            # Get the IDs that make up this composite region
-            component_ids = [int(uid) for uid in unique_ids if np.any(composite_region & (segmap_data == uid))]
-            print(f"Reconstructed composite region from IDs: {component_ids}")
-            
-            # Update segmap_data to use this composite region for peak finding
-            segmap_data = np.where(composite_region, idno, 0)
-        else:
-            print(f"Error: Source position out of bounds.")
+            # Only keep regions with multiple IDs (true composites)
+            if len(ids_in_region) > 1:
+                composite_regions.append({
+                    'label_id': label_id,
+                    'ids': ids_in_region,
+                    'mask': labeled_region_mask
+                })
+        
+        if len(composite_regions) == 0:
+            print(f"Warning: No composite regions (with >1 ID) found near source position.")
+            print(f"Using original source position.")
             return ra, dec
+        
+        print(f"Found {len(composite_regions)} composite regions with multiple IDs")
+        
+        # Find which composite region contains or is nearest to the source position
+        label_at_position = labeled_array[y_pix, x_pix]
+        
+        # Check if the source position is in one of the composite regions
+        selected_region = None
+        for comp_region in composite_regions:
+            if comp_region['label_id'] == label_at_position:
+                selected_region = comp_region
+                break
+        
+        if selected_region is None:
+            # Source position is not in any composite region
+            # Find the nearest composite region
+            distances = []
+            for comp_region in composite_regions:
+                ys, xs = np.where(comp_region['mask'])
+                # Calculate minimum distance to this region
+                min_dist = np.min(np.sqrt((xs - x_pix)**2 + (ys - y_pix)**2))
+                distances.append((min_dist, comp_region))
+            
+            if distances:
+                _, selected_region = min(distances)
+                print(f"Source position not in composite regions. Using nearest composite region.")
+            else:
+                print(f"Warning: Could not find any composite regions.")
+                return ra, dec
+        
+        # Use the selected composite region
+        composite_region = selected_region['mask']
+        component_ids = selected_region['ids']
+        print(f"Reconstructed composite region from IDs: {component_ids}")
+        
+        # Update segmap_data to use this composite region for peak finding
+        segmap_data = np.where(composite_region, idno, 0)
     
     # Find the brightest pixel in the segmentation region
     # For this, we need the actual image data (not just the segmentation map)
@@ -397,28 +428,23 @@ def get_segmap_peak(seg_map, full_iden, ra, dec, cluster):
         print(f"Warning: No pixels found for source ID {idno} in segmentation map.")
         return ra, dec
     
-    # Try to find a detection image in the segmentation map HDU
-    # Common extensions: 'SCI', 'DETECTION', or use the segmentation counts as proxy
-    detection_image = None
-    
-    # Check for common extension names
-    for ext_name in ['SCI', 'DETECTION', 'WHT']:
-        if ext_name in seg_map:
-            detection_image = seg_map[ext_name].data
-            print(f"Using {ext_name} extension for peak detection.")
-            break
-    
-    # If no detection image found, we need to find the geometric center or use segmap values
-    if detection_image is None:
-        print(f"No detection image found in segmentation map. Using geometric centroid.")
-        # Find geometric centroid of the segmentation region
-        ys, xs = np.where(source_mask)
-        y_peak, x_peak = int(np.mean(ys)), int(np.mean(xs))
+    # If weight map is not provided, load it
+    if weight_map is None:
+        weight_map = io.load_weight_map(cluster)
+
+    if weight_map is None:
+        raise FileNotFoundError(f"Weight map for cluster {cluster} could not be loaded.")
+
+    # Load detection image data from weight map
+    if 'DATA' in weight_map:
+        weight_data = weight_map['DATA'].data
     else:
-        # Find brightest pixel within the source mask
-        masked_image = np.where(source_mask, detection_image, -np.inf)
-        peak_idx = np.argmax(masked_image)
-        y_peak, x_peak = np.unravel_index(peak_idx, masked_image.shape)
+        weight_data = weight_map[0].data
+
+    # Find brightest pixel within the source mask
+    masked_image = np.where(source_mask, weight_data, -np.inf)
+    peak_idx = np.argmax(masked_image)
+    y_peak, x_peak = np.unravel_index(peak_idx, masked_image.shape)
     
     # Convert pixel coordinates to world coordinates
     peak_coord = wcs.pixel_to_world(x_peak, y_peak)

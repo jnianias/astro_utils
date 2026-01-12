@@ -569,6 +569,35 @@ def load_segmentation_map(clus, download_if_missing=False):
         print(f"Error loading segmentation map: {e}")
         return None
     
+def load_weight_map(clus):
+    """
+    Load the R21 weight map for a given cluster.
+
+    Parameters
+    ----------
+    clus : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.)
+    download_if_missing : bool, optional
+        If True, attempt to download the weight map if not found locally. Default is False.
+
+    Returns
+    -------
+    astropy.io.fits.HDUList or None
+        The weight map HDUList, or None if loading failed.
+    """
+    weightmap_path = get_misc_dir(clus) / 'image_weight.fits'
+
+    if not os.path.isfile(weightmap_path):
+        print(f"Weight map file not found: {weightmap_path}")
+        raise FileNotFoundError(f"Weight map file not found: {weightmap_path}")
+    
+    try:
+        return fits.open(weightmap_path)
+    except Exception as e:
+        print(f"Error loading weight map: {e}")
+        return None
+
+    
 def load_muse_cube(clus):
     """
     Load the MUSE cube for a given cluster.

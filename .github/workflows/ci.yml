@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      MUSE_DATA_DIR: tests/test_data
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
