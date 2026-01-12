@@ -9,12 +9,15 @@ from astro_utils import image_processing as imp
 from astro_utils import io
 import pytest
 
-def test_get_segmap_peak():
+def test_get_segmap_peak_composite():
     """
-    Test the get_segmap_peak function to ensure it correctly identifies the peak position of source P848 from the
-    Bullet cluster. This source is a composite consisting of several regions along an extended arc, with the brightest
-    continuum peak being in the far south end of the arc. The source position in the catalogue is off the arc. There
-    are several other composite sources in the segmentation map for this cluster, so this test checks that the function
+    Test the get_segmap_peak function to ensure it correctly identifies the peak position of a composite source.
+
+    The test uses source P848 from the Bullet cluster. This source is a composite consisting of several regions along an extended 
+    arc, with the brightest continuum peak being in the far south end of the arc. The source position in the catalogue 
+    is off the arc. 
+
+    There are several other composite sources in the segmentation map for this cluster, so this test checks that the function
     correctly identifies the closest of these as well as the correct peak within that source.
 
     The expected output coordinates are taken from visual inspection of the segmentation map and the HST image.

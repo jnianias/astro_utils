@@ -1,0 +1,10 @@
+# Requirements for astro_utils
+
+numpy
+astropy
+scipy
+matplotlib
+pytest
+mpdaf
+requests
+beautifulsoup4
