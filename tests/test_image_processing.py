@@ -1,7 +1,13 @@
+
 """
 Tests for the image processing utilities in astro_utils.image_processing module.
 To be run with pytest.
 """
+
+# Make imports robust to running from project root or tests directory
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 from astropy.io import fits
