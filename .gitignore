@@ -61,6 +61,7 @@ venv.bak/
 
 # Data directories (don't commit large data files)
 *.fits
+!tests/test_data/**/*.fits
 *.fits.gz
 muse_catalogs/
 source_spectra/
