@@ -8,3 +8,6 @@ pytest
 mpdaf
 requests
 beautifulsoup4
+error_propagation
+photutils
+specutils
