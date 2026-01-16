@@ -2,11 +2,30 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy import io
 from . import spectroscopy as spectro
 from . import models
+from . import io
 import copy
 import os
+import matplotlib
+from matplotlib.colors import PowerNorm
 
+def safe_show():
+    """
+    Show matplotlib figure only if not running in a non-GUI environment.
+    This function checks the current matplotlib backend and only calls plt.show()
+    if the backend supports GUI operations. This prevents annoying warnings when running
+    in headless environments (e.g., remote servers without display).
+
+    Returns
+    -------
+    None
+    """    
+    if matplotlib.get_backend() not in ['agg', 'template']:
+        plt.show()
+    else:
+        pass  # Do nothing in non-GUI backends
 
 def plotline(iden, clus, idfrom, wln, ax_in, spec_source = '2fwhm', width=100, model=None, title = False,
              hline = None, hspan = None, vline = None, vspan = None,
@@ -288,7 +307,7 @@ def plot_lya_fit(wave, spec, spec_err, popt, func, save_plots=False, plot_dir='.
     # Labels and legend
     ax.set_ylabel('Flux')
     ax.legend()
-    ax.set_title('Lyman-α Fit')
+    ax.set_title(r'Lyman-$\alpha$ Fit')
 
     # Axis labels
     ax.set_xlabel(r'Wavelength (\AA)')
@@ -304,7 +323,7 @@ def plot_lya_fit(wave, spec, spec_err, popt, func, save_plots=False, plot_dir='.
         plt.savefig(plot_path, dpi=250)
         print(f'Lyman alpha fit plot saved to {plot_path}')
 
-    plt.show()
+    safe_show()
     plt.close()
 
 def plot_line_fit(wave, spec, spec_err, popt, func, line_name, save_plots=False, plot_dir='./', ax_in=None, 
@@ -412,5 +431,64 @@ def plot_line_fit(wave, spec, spec_err, popt, func, line_name, save_plots=False,
 
     # Show and close if no axis was provided
     if ax_in is None:
-        plt.show()
+        safe_show()
         plt.close()
+
+def plot_lya_peak_detection(lya_nb_img, ra, dec, ra_opt, dec_opt, cluster, full_iden, peak_locs_world, save_plot=False):
+    """
+    Plot the Lyman-alpha narrowband image with detected peaks and source positions.
+
+    Parameters
+    ----------
+    lya_nb_img : MPDAF Image
+    The Lyman-alpha narrowband image object with WCS information.
+    ra : float
+        Original right ascension of the source (degrees).
+    dec : float
+        Original declination of the source (degrees).
+    ra_opt : float
+        Optimised right ascension of the source (degrees).
+    dec_opt : float
+        Optimised declination of the source (degrees).
+    cluster : str
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.).
+    full_iden : str
+        Full identifier string of the source (e.g., 'E1234', 'X5678', etc.).
+    peak_locs_world : array-like, shape (N, 2)
+        World coordinates (RA, Dec) of detected peaks to plot.
+    save_plot : bool, optional
+        Whether to save the plot to disk. Default is False.
+
+    Returns
+    -------
+    None
+    """
+    # Get sensible vmin, vmax for display
+    vmin, vmax = np.percentile(lya_nb_img.data.compressed(), [5, 99.9])
+    plt.figure(figsize=(6, 6), facecolor='white')
+    plt.imshow(lya_nb_img.data, origin='lower', cmap='viridis', norm=PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax * 1.05))
+    
+    # Plot detected peaks if any remain after filtering
+    if len(peak_locs_world) > 0:
+        peak_locs_for_plot = lya_nb_img.wcs.sky2pix(peak_locs_world)
+        plt.scatter(peak_locs_for_plot[:, 1], peak_locs_for_plot[:, 0], c='red', marker='x', s=100, label='Detected Peaks')
+    
+    # Always mark the optimised position (which may be the original position)
+    opt_y, opt_x = lya_nb_img.wcs.sky2pix([[dec_opt, ra_opt]])[0]
+    plt.scatter(opt_x, opt_y, c='cyan', marker='o', s=100, facecolors='none', label='Source Position')
+    
+    # Mark original position if different from optimised position
+    if (ra_opt, dec_opt) != (ra, dec):
+        orig_y, orig_x = lya_nb_img.wcs.sky2pix([[dec, ra]])[0]
+        plt.scatter(orig_x, orig_y, c='black', marker='+', s=100, label='Original Position')
+    
+    plt.legend(loc='upper right')
+    plt.xlabel('Pixel X')
+    plt.ylabel('Pixel Y')
+    plt.title(f"{full_iden} " r"Lyman-$\alpha$ " f"NB image with Detected Peaks")
+    plt.colorbar(label='Flux')
+    if save_plot:
+        plot_dir = io.get_plot_dir(cluster, full_iden) # Get directory for saving plots for this source
+        plt.savefig(str(plot_dir / f"lya_peak_{full_iden}.png"), bbox_inches='tight', dpi=150)
+    safe_show()
+    plt.close()

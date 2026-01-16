@@ -162,7 +162,8 @@ def get_muse_cand(iden, clus):
     """
     Get all MUSELET and PRIOR lines for a given identifier in a given cluster.
 
-    Includes a provision for M2055 and M20355 from MACS0416S since these have had their IDs changed.
+    # Includes a provision for M2055 and M20355 from MACS0416S since these have had their IDs changed.
+    (commented out now that the r21 catalogue has been updated)
 
     Parameters
     ----------
@@ -181,8 +182,8 @@ def get_muse_cand(iden, clus):
     >>> get_muse_cand('E1234', 'A2744')
     <Table rows=...>
     """
-    if iden in ['M2055', 'M20355'] and clus == 'MACS0416S':
-        iden = iden[:-2] # Just remove the '55' at the end
+    # if iden in ['M2055', 'M20355'] and clus == 'MACS0416S':
+    #     iden = iden[:-2] # Just remove the '55' at the end
 
     # Get the relevant cluster line table
     linetab = io.load_r21_catalogue(clus, type='line')
@@ -200,7 +201,17 @@ def get_muse_cand(iden, clus):
         # Generate a table of lines for this object, sorted by SNR
         rows = aptb.Table(linetab[objidx])
         rows.sort('SNR', reverse=True)
-        lya_z = rows[rows['LINE'] == 'LYALPHA']['Z'].data[0]
+
+        # Get Lya redshift using whichever Lya line has the greatest flux (i.e. prefer emission to absorption)
+        lya_mask = rows['LINE'] == 'LYALPHA'
+        if np.sum(lya_mask) == 0:
+            print(f"WARNING! No Lyman alpha line found for {iden} in {clus}")
+            return aptb.Table() # Return empty table if no Lya found
+        lya_rows = rows[lya_mask]
+        lya_fluxes = lya_rows['FLUX']
+        lya_best_idx = np.argmax(lya_fluxes)
+        lya_z = lya_rows['Z'][lya_best_idx]
+
         # Eliminate any lines that are not within 1000 km/s of the Lya redshift
         goodrows = np.abs(spectro.wave2vel(rows['LBDA_OBS'], rows['LBDA_REST'], redshift=lya_z) < 1000.)
         for i, row in enumerate(rows):
@@ -238,7 +249,8 @@ def get_line_table(iden, clus, exclude_lya=True):
     candidate_line_table.sort('SNR', reverse=True) # This must be an astropy table
 
     # Get rid of any repeats (these can be present due to different line families)
-    line_table = aptb.unique(candidate_line_table, keys='LINE')
+    # line_table = aptb.unique(candidate_line_table, keys='LINE')
+    line_table = candidate_line_table
 
     # Get rid of Lyman alpha as we have already fit that
     if exclude_lya:
@@ -592,3 +604,50 @@ def find_closest_cluster_member(row, maxdist=5.0 * u.arcsec, return_all=False):
         ctab = []
 
     return ctab if return_all else best_galaxy
+
+def get_line_peak(line, full_iden, cluster, family=None):
+    """
+    Retrieve the peak wavelength of a specified emission line for a given source.
+
+    Parameters
+    ----------
+    line : str
+        Name of the emission line (e.g., 'CIII', 'OIII').
+    full_iden : str
+        Full identifier of the source (e.g., 'E1234', 'X5678').
+    cluster : str
+        Name of the cluster (e.g., 'A2744', 'MACS0416').
+    family : str, optional
+        Line family to filter by (e.g., 'abs', 'lyalpha', 'forbidden'). Default is None.
+
+    Returns
+    -------
+    float or None
+        Peak wavelength of the specified line in Angstroms, or None if not found.
+
+    Example
+    -------
+    >>> get_line_peak('CIII', 'E1234', 'A2744')
+    1908.73
+    """
+    line_table = get_muse_cand(full_iden, cluster)
+
+    # If no lines found, return None
+    if len(line_table) == 0:
+        print(f"No lines found for {full_iden} in {cluster}")
+        return None
+
+    # Filter by family if provided
+    if family is not None:
+        line_table = line_table[line_table['FAMILY'] == family]
+        if len(line_table) == 0:
+            print(f"No lines in requested family found for {full_iden} in {cluster}")
+            return None
+
+    line_row = line_table[line_table['LINE'] == line]
+    
+    if len(line_row) == 0:
+        print(f"Line {line} not found for {full_iden} in {cluster}")
+        return None
+
+    return line_row['LBDA_OBS'][0]

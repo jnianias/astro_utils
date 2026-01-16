@@ -702,7 +702,7 @@ class BootstrapParams(TypedDict, total=False):
     max_nfev: int
 
 
-def get_initial_guesses_from_catalog(linetab, linename):
+def get_initial_guesses_from_catalog(linetab, linename, type='auto'):
     """
     Extract initial guesses for fitting parameters from a line table.
 
@@ -712,6 +712,8 @@ def get_initial_guesses_from_catalog(linetab, linename):
         Table containing line information with columns for initial guesses.
     linename : str
         Name of the line to extract initial guesses for.
+    type : str, optional
+        Type of line ('auto', 'abs', 'em')
 
     Returns
     -------
@@ -728,12 +730,39 @@ def get_initial_guesses_from_catalog(linetab, linename):
     >>> get_initial_guesses(linetab, 'LYALPHA')
     {'LPEAK': 1216.0, 'FWHM': 300.0, 'AMP': 1.0}
     """
-    # Get the row of the table for this line
-    linerow = linetab[linetab['LINE'] == linename][0]
-    # If it's the primary line of a doublet, also get the secondary line info
+    # Get the row(s) of the table for this line
+    linerows = linetab[linetab['LINE'] == linename]
+    # If type has been specified, filter by type
+    if type == 'abs':
+        linerow = linerows[linerows['FAMILY'] == 'abs'][0]
+    elif type == 'em':
+        linerow = linerows[~(linerows['FAMILY'] == 'abs')][0]
+    else: # If "auto", take the line with the greatest abs value of flux
+        fluxes = linerows['FLUX']
+        max_flux_idx = np.argmax(np.abs(fluxes))
+        linerow = linerows[max_flux_idx]
+    
+    # If it's the primary line of a doublet, also get the secondary line info (if it's there)
     if linename in doubletdict:
-        sec_linename = const.slines[np.where(const.flines == linename)[0][0]]
-        sec_linerow = linetab[linetab['LINE'] == sec_linename][0]
+        sec_linerow = None
+        try:
+            sec_linename = doubletdict[linename][1]
+            sec_linerow = linetab[linetab['LINE'] == sec_linename][0]
+        except IndexError: # No secondary line found
+            # Check to see if this is due to the secondary being redshifted out of the MUSE wavelength range
+            z_primary = (linerow['LBDA_OBS'] / wavedict[linename]) - 1
+            sec_wave_rest = wavedict[sec_linename]
+            sec_wave_obs = sec_wave_rest * (1 + z_primary)
+            if sec_wave_obs > 9350: # MUSE red cutoff
+                warnings.warn(f"Secondary line {sec_linename} of doublet {linename} "
+                              f"redshifted out of MUSE range at z={z_primary:.3f}; "
+                              f"proceeding without secondary line info.")
+                sec_linerow = None
+            else:
+                warnings.warn(f"Secondary line {sec_linename} of doublet {linename} "
+                              f"not found in line table; using primary line info only.")
+                sec_linerow = None
+    
     # Lyman alpha and other lines must be treated separately due to different parameters
     if linename == 'LYALPHA':
         initial_guesses = {
@@ -752,7 +781,7 @@ def get_initial_guesses_from_catalog(linetab, linename):
             'FLUX': linerow['FLUX'],  # integrated flux of primary line with correction factor
             'LPEAK': linerow['LBDA_OBS'], # peak wavelength
             'FWHM': linerow['FWHM_OBS'], # fwhm
-            'FLUX2': sec_linerow['FLUX'], # flux ratio of second line to first with correction factor
+            'FLUX2': sec_linerow['FLUX'] if sec_linerow is not None else linerow['FLUX'], 
             'CONT': linerow['CONT_OBS'], # continuum level
         }
     else:
@@ -817,8 +846,8 @@ def prep_inputs(initial_guesses, linename, z_lya, bounds={}):
     lpeak_init = initial_guesses['LPEAK']
     delta_v = spectro.wave2vel(lpeak_init, wavedict[linename], z_lya)
     if abs(delta_v) > 500:
-        warnings.warn(f"Initial guess for LPEAK ({lpeak_init:.2f} Å) is {delta_v:.1f} km/s \
-                       from Lyman alpha ({expected_wavelength:.2f} Å); resetting to -200 km/s offset.")
+        warnings.warn(f"Initial guess for LPEAK ({lpeak_init:.2f} Å) is {delta_v:.1f} km/s"
+                      f" from Lyman alpha ({expected_wavelength:.2f} Å); resetting to -200 km/s offset.")
         initial_guesses['LPEAK'] = spectro.vel2wave(-200, wavedict[linename], z_lya)
         if 'LPEAK' in bounds:
             bounds['LPEAK'] = (initial_guesses['LPEAK'] - 6.25, initial_guesses['LPEAK'] + 6.25)

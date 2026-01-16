@@ -257,7 +257,7 @@ def show_segmentation_mask(row, ax_in, return_cutout = False, size = 'auto', dow
         if return_cutout:
             return cutout # returns the cutout object containing vital WCS info
         
-def get_segmap_peak(full_iden, cluster, seg_map=None, weight_map=None):
+def get_segmap_peak(full_iden, cluster, seg_map=None, weight_map=None, search_size=20.0):
     """
     Finds the brightest pixel in the segmentation map for the given source ID. If no segmentation map is found
     for the source ID, this may be due to the source being a composite source, where multiple adjacent segmentation
@@ -274,6 +274,8 @@ def get_segmap_peak(full_iden, cluster, seg_map=None, weight_map=None):
         Pre-loaded segmentation map HDUList. If None, the function will load it.
     weight_map : astropy.io.fits.HDUList, optional
         Pre-loaded weight map HDUList. If None, the function will load it.
+    search_size : float, optional
+        Size of the search region in arcseconds when reconstructing composite sources. Default is 10.0.
     
     Returns
     -------
@@ -335,7 +337,7 @@ def get_segmap_peak(full_iden, cluster, seg_map=None, weight_map=None):
             print(f"Error: Source position {ra}, {dec} is out of bounds for segmentation map of cluster {cluster}.")
             return ra, dec
         
-        search_region = segmap_data # Search entire segmentation map
+        search_region = Cutout2D(segmap_data, (x_pix, y_pix), search_size*u.arcsec, wcs=wcs).data
         
         # Find unique IDs in the search region
         unique_ids = np.unique(search_region[search_region > 0])

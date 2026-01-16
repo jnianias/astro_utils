@@ -151,8 +151,8 @@ def get_data_dir():
 
     Returns
     -------
-    str
-        The base data directory path.
+    Path
+        The base data directory path as a pathlib.Path object.
     """
     
     data_dir = os.environ.get('MUSE_DATA_DIR')
@@ -188,8 +188,8 @@ def get_r21_catalog_dir(cluster):
 
     Returns
     -------
-    str
-        The directory path where the catalogues for the specified cluster are stored.
+    Path
+        The directory path where the catalogues for the specified cluster are stored as a pathlib.Path object.
     """
     data_dir = get_data_dir()
     catalog_dir = data_dir / cluster.upper() / 'catalogs' / 'R21'
@@ -208,8 +208,8 @@ def get_fit_catalog_dir(cluster):
 
     Returns
     -------
-    str
-        The directory path where the catalogues for the specified cluster are stored.
+    Path
+        The directory path where the fit catalogues for the specified cluster are stored as a pathlib.Path object.
     """
     data_dir = get_data_dir()
     catalog_dir = data_dir / cluster.upper() / 'catalogs' / 'fit_results'
@@ -228,8 +228,8 @@ def get_r21_spectra_dir(cluster):
 
     Returns
     -------
-    str
-        The directory path where the spectra for the specified cluster are stored.
+    Path
+        The directory path where the spectra for the specified cluster are stored as a pathlib.Path object.
     """
     data_dir = get_data_dir()
     spectra_dir = data_dir / cluster.upper() / 'spectra' / 'R21'
@@ -248,8 +248,8 @@ def get_aper_spectra_dir(cluster):
 
     Returns
     -------
-    str
-        The directory path where the aperture spectra for the specified cluster are stored.
+    Path
+        The directory path where the aperture spectra for the specified cluster are stored as a pathlib.Path object.
     """
     data_dir = get_data_dir()
     spectra_dir = data_dir / cluster.upper() / 'spectra' / 'aper'
@@ -268,8 +268,8 @@ def get_misc_dir(cluster):
 
     Returns
     -------
-    str
-        The directory path where miscellaneous data files for the specified cluster are stored.
+    Path
+        The directory path where miscellaneous data files for the specified cluster are stored as a pathlib.Path object.
     """
     data_dir = get_data_dir()
     misc_dir = data_dir / cluster.upper() / 'misc'
@@ -288,8 +288,8 @@ def get_muse_cube_dir(cluster):
 
     Returns
     -------
-    str
-        The directory path where the MUSE cubes for the specified cluster are stored.
+    Path
+        The directory path where the MUSE cubes for the specified cluster are stored as a pathlib.Path object.
     """
     data_dir = get_data_dir()
     cube_dir = data_dir / cluster.upper() / 'cube'
@@ -680,8 +680,8 @@ def get_plot_dir(cluster, iden):
 
     Returns
     -------
-    str
-        The directory path where plots for the specified cluster are stored.
+    Path
+        The directory path where plots for the specified source are stored as a pathlib.Path object.
     """
     data_dir = get_data_dir()
     plot_dir = data_dir / cluster.upper() / 'plots' / iden
