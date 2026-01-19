@@ -763,7 +763,7 @@ def get_initial_guesses_from_catalog(linetab, linename, type='auto'):
                               f"not found in line table; using primary line info only.")
                 sec_linerow = None
     
-    # Lyman alpha and other lines must be treated separately due to different parameters
+    # Lyman alpha must be treated separately due to different parameters
     if linename == 'LYALPHA':
         initial_guesses = {
             'AMPB': linerow['PEAK_OBS'], # amplitude of blue peak
@@ -794,7 +794,87 @@ def get_initial_guesses_from_catalog(linetab, linename, type='auto'):
 
     return initial_guesses
         
+def gen_bounds(initial_guesses, linename, input_bounds={}, force_sign=None):
+    """
+    Generate default bounds for fitting parameters based on initial guesses.
 
+    Parameters
+    ----------
+    initial_guesses : dict
+        Dictionary of initial guesses for parameters. Must include 'LPEAK'. 
+        Strongly recommended to include 'FLUX' or 'AMP'.
+    linename : str
+        Name of the line (must be present in wavedict).
+    input_bounds : dict, optional
+        Dictionary of user-specified bounds for parameters if desired. Any parameters
+        not specified here will use default bounds.
+    force_sign : str, optional
+        If 'positive', forces amplitude/flux parameters to be positive.
+        If 'negative', forces them to be negative.
+        Otherwise, no sign constraint is applied.
+
+    Returns
+    -------
+    dict
+        Dictionary of bounds for parameters.
+
+    Notes
+    -----
+    - Default bounds are set to ±6.25 Angstroms for LPEAK, and reasonable ranges for other parameters.
+
+    Examples
+    --------
+    >>> gen_bounds({'LPEAK': 1216, 'FWHM': 300, 'AMP': 1}, 'LYALPHA')
+    {'LPEAK': (1209.75, 1222.25), 'FWHM': (50, 1000), 'AMP': (0, 10)}
+    """
+    if linename not in wavedict:
+        raise ValueError(f"Line {linename} not found in wavelength dictionary.")
+    if linename == 'LYALPHA' and force_sign != 'positive':
+        print("WARNING: Fitting Lyman alpha allowing negative solution! force_sign set to 'positive' recommended.")
+    
+    rest_wave = wavedict[linename]
+    z         = rest_wave / initial_guesses['LPEAK'] - 1
+
+    default_flux_min = -100 * initial_guesses.get('FLUX', 100) if force_sign != 'positive' else 0
+    default_flux_max = 100 * initial_guesses.get('FLUX', 100) if force_sign != 'negative' else 0
+    default_lpeak_tol = 6.25 / 4  # Angstroms in rest-frame
+
+    cen_r_init = np.nan
+    if linename == 'LYALPHA': # Gets the central peak for Lya double peak or single peak
+        lpeak_key = 'LPEAKR' if 'LPEAKR' in initial_guesses else 'LPEAK'
+        cen_r_init = initial_guesses[lpeak_key]
+
+    defaults = {
+        'LPEAK':  (initial_guesses['LPEAK'] - default_lpeak_tol * (1 + z), 
+                  initial_guesses['LPEAK'] + default_lpeak_tol * (1 + z)),
+        'FWHM':   (2.4, np.abs(spectro.vel2wave(300, rest_wave, 0) - spectro.vel2wave(0, rest_wave, 0)) * (1 + z)),
+        'FLUX':   (default_flux_min, default_flux_max),
+        'CONT':   (-50, 2000), # appropriate for sky-subtracted MUSE LAE spectra
+        'AMP':    (default_flux_min, 10000), # amplitude bounds -- note AMP is used for Lya
+        'DISP':   (0.16 * (1 + z), 1.6 * (1 + z)), # dispersion bounds for Lya
+        'ASYM':   (-0.5, 0.5), # asymmetry bounds for Lya
+        'AMPB':   (default_flux_min, 10000), # amplitude of blue peak for Lya
+        'LPEAKB': (initial_guesses['LPEAKB'] - default_lpeak_tol * (1 + z), 
+                   initial_guesses['LPEAKB'] + default_lpeak_tol * (1 + z)),
+        'DISPB':  (0.16 * (1 + z), 1.6 * (1 + z)), # dispersion of blue peak for Lya
+        'ASYMB':  (-0.5, 0.5), # asymmetry of blue peak for Lya
+        'AMPR':   (default_flux_min, 10000), # amplitude of red peak for Lya
+        'LPEAKR': (initial_guesses['LPEAKR'] - default_lpeak_tol * (1 + z), 
+                   initial_guesses['LPEAKR'] + default_lpeak_tol * (1 + z)),
+        'DISPR':  (0.16 * (1 + z), 1.6 * (1 + z)), # dispersion of red peak for Lya
+        'ASYMR':  (-0.5, 0.5), # asymmetry of red peak for Lya
+        'SLOPE':  (-np.inf, np.inf), # slope for linear continuum
+        'TAU':    (-50, 2000), # optical depth for Damped Lyman alpha profile
+        'FWHM':   ((spectro.vel2wave(100, rest_wave, 0) - spectro.vel2wave(0, rest_wave, 0)) * (1 + z), 
+                  (spectro.vel2wave(500, rest_wave, 0) - spectro.vel2wave(0, rest_wave, 0)) * (1 + z)), # FWHM bounds
+        'LPEAK_ABS': (cen_r_init - 3.33 * (1 + z), cen_r_init + 3.33 * (1 + z))
+    }
+
+    bounds = {
+        input_bounds.get(param, defaults[param]) for param in initial_guesses.keys()
+    }
+
+    return bounds
 
 def prep_inputs(initial_guesses, linename, z_lya, bounds={}):
     """
@@ -872,7 +952,7 @@ def prep_inputs(initial_guesses, linename, z_lya, bounds={}):
 
 def check_inputs(p0, bounds):
     """
-    Ensure initial guesses are within bounds and not NaN.
+    Ensure initial guesses are within bounds and not NaN. used as a final check before fitting.
 
     Parameters
     ----------
