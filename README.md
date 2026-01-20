@@ -196,14 +196,10 @@ If you use this package in your research, please cite:
 - Richard et al. (2021) for the MUSE catalogs
 - Your publication using this software
 
-## License
-
-[Specify your license here]
-
 ## Contact
 
-[Your contact information]
+nianias@hku.hk
 
 ## Acknowledgments
 
-This package uses data from the Richard et al. (2021) MUSE lensing cluster survey.
+This package uses data from the Richard et al. (2021) MUSE lensing cluster survey (https://arxiv.org/abs/2009.09784)

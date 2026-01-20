@@ -113,9 +113,8 @@ def fit_lya_line(wave, spec, spec_err, initial_guesses, iden, cluster, baseline=
 
 
 def fit_lya_autobase(wave, spec, spec_err, initial_guesses, iden, cluster, 
-                     width=50, bounds={}, gen_bounds_kwargs={}, plot_result=True, 
-                     mc_niter=500, rchsq_thresh=2.0, save_plots = False, 
-                     plot_dir = './'):
+                     width=50, bounds={}, plot_result=True, mc_niter=500, 
+                     rchsq_thresh=2.0, save_plots = False, plot_dir = './'):
     """
     Fit the Lyman alpha line based on prior fitting results (if present). Here,
     we compare single and double-peaked fits and return the best one based on reduced chi-squared.
@@ -157,8 +156,10 @@ def fit_lya_autobase(wave, spec, spec_err, initial_guesses, iden, cluster,
         Empty dict {} if all fits failed.
     """
     # First use a constant baseline with the refit_lya_line function
-    fit_const = fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster, width=width, baseline='const',
-                               plot_result=plot_result, mc_niter=mc_niter, save_plots=save_plots, plot_dir=plot_dir)
+    fit_const = fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster, 
+                        bounds=bounds, width=width, baseline='const', 
+                        plot_result=plot_result, mc_niter=mc_niter, 
+                        save_plots=save_plots, plot_dir=plot_dir)
     
     # Check the reduced chi-squared of the fit -- if it's good enough, return it
     if fit_const and fit_const.get('reduced_chisq') and fit_const['reduced_chisq'] < rchsq_thresh:
@@ -167,8 +168,10 @@ def fit_lya_autobase(wave, spec, spec_err, initial_guesses, iden, cluster,
     
     # If not, try a linear baseline
     print("Trying linear baseline fit...")
-    fit_lin = fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster, width=width, baseline='lin',
-                             plot_result=plot_result, mc_niter=mc_niter, save_plots=save_plots, plot_dir=plot_dir)
+    fit_lin = fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster, 
+                      bounds=bounds, width=width, baseline='lin',
+                      plot_result=plot_result, mc_niter=mc_niter, 
+                      save_plots=save_plots, plot_dir=plot_dir)
 
     if fit_lin and fit_lin.get('reduced_chisq') and fit_lin['reduced_chisq'] < rchsq_thresh:
         print("Linear baseline fit is good enough; returning result.")
@@ -176,8 +179,10 @@ def fit_lya_autobase(wave, spec, spec_err, initial_guesses, iden, cluster,
     
     # If still not good enough, try a damped Lyman alpha baseline
     print("Trying damped Lyman alpha baseline fit...")
-    fit_damp = fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster, width=width, baseline='damp',
-                              plot_result=plot_result, mc_niter=mc_niter, save_plots=save_plots, plot_dir=plot_dir)
+    fit_damp = fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster, 
+                       bounds=bounds, width=width, baseline='damp',
+                       plot_result=plot_result, mc_niter=mc_niter, 
+                       save_plots=save_plots, plot_dir=plot_dir)
 
     if fit_damp and fit_damp.get('reduced_chisq') and fit_damp['reduced_chisq'] < rchsq_thresh:
         print("Damped Lyman alpha baseline fit is good enough; returning result.")
@@ -193,9 +198,8 @@ def fit_lya_autobase(wave, spec, spec_err, initial_guesses, iden, cluster,
     return best_fit
 
 def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster, 
-            bounds={}, gen_bounds_kwargs={}, width=50, baseline='const', 
-            plot_result=True, mc_niter=1000, save_plots=False, 
-            plot_dir='./'):
+            bounds={}, width=50, baseline='const', plot_result=True, 
+            mc_niter=1000, save_plots=False, plot_dir='./'):
     """
     Refit the Lyman alpha line based on prior fitting results. Here, we compare single and double-peaked fits
     and return the best one based on reduced chi-squared.
@@ -310,7 +314,14 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
             *cont_init]  # baseline
     
     # Define bounds for the parameters
-    bounds = gen_bounds(initial_guesses, 'LYALPHA')
+    bounds = gen_bounds(initial_guesses, 'LYALPHA', input_bounds=bounds)
+    # Check if bounds dict contains all required parameters in param_names
+    missing_params = [param for param in param_names if param not in bounds[0] or param not in bounds[1]]
+    if missing_params:
+        raise ValueError(f"Bounds dictionary is missing entries for parameters: {missing_params}")
+    
+    bounds = [[bounds[0][i] for i in range(len(param_names))],
+              [bounds[1][i] for i in range(len(param_names))]]
     # bounds = (
     #     [0, cen_b_init - 15, 0.625, -0.5, 
     #      0, cen_r_init - 5,  0.625, -0.5, 
@@ -376,10 +387,26 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
 
     # Now perform a single-peaked fit (with multiple attempts in case of failure)
     p0_single = [amp_r_init, cen_r_init, wid_r_init, asy_r_init, *cont_init]  # baseline
-    bounds_single = (
-        [0,     cen_r_init - 5, 1.25, -0.5,  *cont_lower],  # lower bounds
-        [10000, cen_r_init + 5, 50,    0.5,  *cont_upper]   # upper bounds
-    )
+    # Make initial_guesses dict for single peak
+    single_initial_guesses = {
+        'AMPR': amp_r_init,
+        'LPEAKR': cen_r_init,
+        'DISPR': wid_r_init,
+        'ASYMR': asy_r_init,
+        'CONT': cont_init[0]
+    }
+    if baseline == 'lin':
+        single_initial_guesses['SLOPE'] = slope_init
+    elif baseline == 'damp':
+        single_initial_guesses['TAU'] = tau_init
+        single_initial_guesses['FWHM'] = fwhm_init
+        single_initial_guesses['LPEAK_ABS'] = lpeak_abs_init
+    
+    bounds_single = gen_bounds(single_initial_guesses, 'LYALPHA', input_bounds=bounds)
+    # bounds_single = (
+    #     [0,     cen_r_init - 5, 1.25, -0.5,  *cont_lower],  # lower bounds
+    #     [10000, cen_r_init + 5, 50,    0.5,  *cont_upper]   # upper bounds
+    # )
     mdl_func_single = mdl.lya_speak_lin if baseline == 'lin' else \
                 mdl.lya_speak_damp if baseline == 'damp' else \
                 mdl.lya_speak

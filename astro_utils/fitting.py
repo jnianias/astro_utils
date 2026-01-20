@@ -801,8 +801,8 @@ def gen_bounds(initial_guesses, linename, input_bounds={}, force_sign=None):
     Parameters
     ----------
     initial_guesses : dict
-        Dictionary of initial guesses for parameters. Must include 'LPEAK'. 
-        Strongly recommended to include 'FLUX' or 'AMP'.
+        Dictionary of initial guesses for parameters. Must be provided with all necessary keys in
+        order to generate the bounds dictionary.
     linename : str
         Name of the line (must be present in wavedict).
     input_bounds : dict, optional
@@ -838,6 +838,8 @@ def gen_bounds(initial_guesses, linename, input_bounds={}, force_sign=None):
     default_flux_min = -100 * initial_guesses.get('FLUX', 100) if force_sign != 'positive' else 0
     default_flux_max = 100 * initial_guesses.get('FLUX', 100) if force_sign != 'negative' else 0
     default_lpeak_tol = 6.25 / 4  # Angstroms in rest-frame
+    default_lpeakb_tol = [-15 / 4, 10 / 4] # How wide an area around LPEAKB to allow
+    default_lpeakr_tol = [-5 / 4, 10 / 4]  # How wide an area around LPEAKR to allow
 
     cen_r_init = np.nan
     if linename == 'LYALPHA': # Gets the central peak for Lya double peak or single peak
@@ -854,13 +856,13 @@ def gen_bounds(initial_guesses, linename, input_bounds={}, force_sign=None):
         'DISP':   (0.16 * (1 + z), 1.6 * (1 + z)), # dispersion bounds for Lya
         'ASYM':   (-0.5, 0.5), # asymmetry bounds for Lya
         'AMPB':   (default_flux_min, 10000), # amplitude of blue peak for Lya
-        'LPEAKB': (initial_guesses['LPEAKB'] - default_lpeak_tol * (1 + z), 
-                   initial_guesses['LPEAKB'] + default_lpeak_tol * (1 + z)),
+        'LPEAKB': (initial_guesses['LPEAKB'] + default_lpeakb_tol[0] * (1 + z), 
+                   initial_guesses['LPEAKB'] + default_lpeakb_tol[1] * (1 + z)),
         'DISPB':  (0.16 * (1 + z), 1.6 * (1 + z)), # dispersion of blue peak for Lya
         'ASYMB':  (-0.5, 0.5), # asymmetry of blue peak for Lya
         'AMPR':   (default_flux_min, 10000), # amplitude of red peak for Lya
-        'LPEAKR': (initial_guesses['LPEAKR'] - default_lpeak_tol * (1 + z), 
-                   initial_guesses['LPEAKR'] + default_lpeak_tol * (1 + z)),
+        'LPEAKR': (initial_guesses['LPEAKR'] + default_lpeakr_tol[0] * (1 + z), 
+                   initial_guesses['LPEAKR'] + default_lpeakr_tol[1] * (1 + z)),
         'DISPR':  (0.16 * (1 + z), 1.6 * (1 + z)), # dispersion of red peak for Lya
         'ASYMR':  (-0.5, 0.5), # asymmetry of red peak for Lya
         'SLOPE':  (-np.inf, np.inf), # slope for linear continuum
@@ -871,7 +873,7 @@ def gen_bounds(initial_guesses, linename, input_bounds={}, force_sign=None):
     }
 
     bounds = {
-        input_bounds.get(param, defaults[param]) for param in initial_guesses.keys()
+        param: input_bounds.get(param, defaults[param]) for param in initial_guesses.keys()
     }
 
     return bounds
