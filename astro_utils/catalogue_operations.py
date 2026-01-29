@@ -158,9 +158,9 @@ def is_counterpart(row1, row2, lenstables, sigma=3.0, method='fit_match'):
             return is_counterpart(row1, row2, lenstables, sigma=sigma, method='fit_match')
 
 
-def get_muse_cand(iden, clus):
+def get_muse_cand(iden, clus, check_lya_velocity=True):
     """
-    Get all MUSELET and PRIOR lines for a given identifier in a given cluster.
+    Get all lines for a given identifier in a given cluster.
 
     # Includes a provision for M2055 and M20355 from MACS0416S since these have had their IDs changed.
     (commented out now that the r21 catalogue has been updated)
@@ -201,6 +201,14 @@ def get_muse_cand(iden, clus):
         # Generate a table of lines for this object, sorted by SNR
         rows = aptb.Table(linetab[objidx])
         rows.sort('SNR', reverse=True)
+
+        if not check_lya_velocity: # homogenise the family column and return all lines
+            for i, row in enumerate(rows):
+                if row['LINE'] in const.flines:
+                    rows['FAMILY'][i] = const.flines[const.flines == row['LINE']][0]
+                elif row['LINE'] in const.slines:
+                    rows['FAMILY'][i] = const.flines[const.slines == row['LINE']][0]
+            return rows
 
         # Get Lya redshift using whichever Lya line has the greatest flux (i.e. prefer emission to absorption)
         lya_mask = rows['LINE'] == 'LYALPHA'
@@ -651,3 +659,43 @@ def get_line_peak(line, full_iden, cluster, family=None):
         return None
 
     return line_row['LBDA_OBS'][0]
+
+def get_source_value(cluster, full_iden, colname):
+    """
+    Retrieve a specific value from the R21 catalogue for a given source.
+
+    Parameters
+    ----------
+    cluster : str
+        Name of the cluster (e.g., 'A2744', 'MACS0416').
+    full_iden : str
+        Full identifier of the source (e.g., 'E1234', 'X5678').
+    colname : str
+        Name of the column to retrieve (e.g., 'MAG_ISO_HST_F814W').
+
+    Returns
+    -------
+    float or None
+        Value from the specified column for the source, or None if not found.
+
+    Example
+    -------
+    >>> get_source_value('A2744', 'E1234', 'MAG_ISO_HST_F814W')
+    24.5
+    """
+    r21_table = io.load_r21_catalogue(cluster)
+
+    # Generate full identifiers for matching
+    full_idens = np.array([x['idfrom'][0].replace('E','X') + str(x['iden']) for x in r21_table])
+
+    source_row = r21_table[full_idens == full_iden]
+
+    if len(source_row) == 0:
+        print(f"Source {full_iden} not found in cluster {cluster}")
+        return None
+
+    if colname not in source_row.colnames:
+        print(f"Column {colname} not found in R21 catalogue for cluster {cluster}")
+        return None
+
+    return source_row[colname][0]

@@ -61,7 +61,7 @@ class LyaProfile:
             self.lya_bounds[self.ncomp][0].append(-np.inf)
             self.lya_bounds[self.ncomp][1].append(np.inf)
         elif self.baseline == 'damp':
-            self.lya_param_order[self.ncomp].extend(['TAU', 'FWHM', 'LPEAK_ABS'])
+            self.lya_param_order[self.ncomp].extend(['TAU', 'FWHM_ABS', 'LPEAK_ABS'])
             self.lya_bounds[self.ncomp][0].extend([0   , -10, 1215.67 - 2.5])
             self.lya_bounds[self.ncomp][1].extend([1000,  20, 1215.67 + 2.5])
 
@@ -153,6 +153,7 @@ class LyaProfile:
 
         # Use fit_mc for bootstrapping, passing only user-provided params
         if use_bootstrap:
+            print("Fitting with bootstrapping...")
             fit_mc_kwargs = {
                 'f': self.func,
                 'x': x[mask],
@@ -165,14 +166,14 @@ class LyaProfile:
             if bootstrap_params:
                 fit_mc_kwargs.update(bootstrap_params)
 
-            fitres = fit_mc(**fit_mc_kwargs)
+            fitres = fit_mc(**fit_mc_kwargs) # Pass to fit_mc
 
             if fitres is None:
                 print("Fitting failed.")
                 return None, None, None, None
             fitted_params, distributions = fitres
-            popt = np.array(fitted_params[0])
-            perrs = np.array(fitted_params[1])
+            popt = np.array(fitted_params[0]) # Best-fit parameters from fit_mc
+            perrs = np.array(fitted_params[1]) # Errors from fit_mc
             
             # Make a dictionary to pass to get_adv_params (does not need to be Complex here)
             param_dicts = []
@@ -185,7 +186,7 @@ class LyaProfile:
             adv_errors = {}
             for key in advparams_distr[0].keys():
                 vals = np.array([d[key] for d in advparams_distr])
-                med, err = avgfunc(vals, bootstrap_params.get('errfunc', 'mad') if bootstrap_params else 'mad')
+                med, err = avgfunc(vals, bootstrap_params.get('errfunc', 'stddev') if bootstrap_params else 'stddev')
                 adv_params[key] = med
                 adv_errors[key] = err
 
@@ -193,6 +194,7 @@ class LyaProfile:
             residuals = y[mask] - self.func(x[mask], *popt)
             reduced_chisq = np.nansum((residuals / yerr[mask])**2) / (np.sum(mask) - len(popt))
         else:
+            print("Fitting without bootstrapping. Errors may be underestimated.")
             max_retries = 3
             success = False
             popt, pcov = None, None

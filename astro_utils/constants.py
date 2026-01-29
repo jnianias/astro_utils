@@ -1,4 +1,6 @@
 import numpy as np
+from . import io
+import astropy.table as aptb
 
 # Fundamental constants used extensively
 c = 299792.458  # speed of light in km/s
@@ -23,64 +25,45 @@ emlines = [
     'CIII1909'
 ]
 
-# Doublets
-doublets = {
-    'OVI1032': ('OVI1032', 'OVI1038'),
-    'NV1238': ('NV1238','NV1243'),
-    'SiIV1394': ('SiIV1394','SiIV1403'),
-    'NIV1483': ('NIV1483','NIV1487'),
-    'CIV1548': ('CIV1548','CIV1551'),
-    'FeII1608': ('FeII1608','FeII1611'),
-    'OIII1660': ('OIII1660','OIII1666'),
-    'AlIII1854': ('AlIII1854','AlIII1862'),
-    'SiIII1883': ('SiIII1883','SiIII1892'),
-    'CIII1907': ('CIII1907','CIII1909')
-}
+# Doublets (old)
+# doublets = {
+#     'OVI1032': ('OVI1032', 'OVI1038'),
+#     'NV1238': ('NV1238','NV1243'),
+#     'SiIV1394': ('SiIV1394','SiIV1403'),
+#     'NIV1483': ('NIV1483','NIV1487'),
+#     'CIV1548': ('CIV1548','CIV1551'),
+#     'FeII1608': ('FeII1608','FeII1611'),
+#     'OIII1660': ('OIII1660','OIII1666'),
+#     'AlIII1854': ('AlIII1854','AlIII1862'),
+#     'SiIII1883': ('SiIII1883','SiIII1892'),
+#     'CIII1907': ('CIII1907','CIII1909')
+# }
+
+# Master wavelength dictionary made using the lines from the MACS0416NE catalogue
+cat = io.load_r21_catalogue('MACS0416NE', type='lines')
+# Get unique lines and their rest wavelengths
+cat_unique = aptb.unique(cat, keys='LINE')
+wavedict = {row['LINE']: row['LBDA_REST'] for row in cat_unique}
+
+# Some special lines not in the catalogue
+wavedict['LYALPHA']  = 1215.67
+wavedict['SiII1527'] = 1526.71
+wavedict['DUST']     = 2175.0
+
+# identify doublets by looking for lines from the same species within 10 angstroms
+doublets = {}
+for line1 in wavedict:
+    for line2 in wavedict:
+        if line1 != line2 and wavedict[line1] < wavedict[line2]:
+            if abs(wavedict[line1] - wavedict[line2]) < 10.0:
+                species1 = ''.join([i for i in line1 if not i.isdigit()])
+                species2 = ''.join([i for i in line2 if not i.isdigit()])
+                if species1 == species2:
+                    doublets[line1] = (line1, line2)
 
 # Compute first and second lines of each doublet
 flines = np.array([x[0] for x in list(doublets.values())])
 slines = np.array([x[1] for x in list(doublets.values())])
-
-# Master wavelength dictionary
-wavedict = {
-    'AlII1671': 1670.79,
-    'AlIII1854': 1854.1,
-    'AlIII1862': 1862.17,
-    'CII1334': 1334.53,
-    'CII2324': 2324.21,
-    'CII2326': 2326.11,
-    'CII2328': 2327.64,
-    'CII2329': 2328.84,
-    'CIII1907': 1906.68,
-    'CIII1909': 1908.73,
-    'CIV1548': 1548.2,
-    'CIV1551': 1550.77,
-    'FeII1608': 1608.45,
-    'FeII1611': 1611.2,
-    'HeII1640': 1640.42,
-    'NIII1750': 1749.67,
-    'NIV1483': 1483.32,
-    'NIV1487': 1486.5,
-    'NV1238': 1238.82,
-    'NV1243': 1242.8,
-    'OI1302': 1302.17,
-    'OIII1660': 1660.81,
-    'OIII1666': 1666.15,
-    'OVI1032': 1031.91,
-    'OVI1038': 1037.61,
-    'SiII1260': 1260.42,
-    'SiII1304': 1304.37,
-    'SiIII1883': 1882.71,
-    'SiIII1892': 1892.03,
-    'SiIV1394': 1393.76,
-    'SiIV1403': 1402.77,
-    'FeII2344': 2344.21,
-    'FeII2374': 2374.46,
-    'FeII2383': 2382.76,
-    'LYALPHA': 1215.67,
-    'SiII1527': 1526.71,
-    'DUST': 2175.0
-}
 
 skylines = {
     'Raman OVI': 6825.4,

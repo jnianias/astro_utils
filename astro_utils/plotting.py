@@ -261,59 +261,105 @@ def lya_mod_plot(row, axin, eml=False):
               color='maroon', alpha=0.6, label=r"model", linestyle='--')
     
 
-def plot_lya_fit(wave, spec, spec_err, popt, func, save_plots=False, plot_dir='./', ax_in=None, spec_type='aper'):
+def plot_lya_fit_result(fit_result, iden, cluster, save_plots=False, plot_dir='./', spec_type='aper'):
     """
-    Plot the Lyman alpha fit results along with the data.
-
+    Plot the Lyman-alpha fit result, decomposed into emission and baseline components.
+    
     Parameters
     ----------
-    wave : array-like
-        Wavelength array of the spectrum.
-    spec : array-like
-        Flux array of the spectrum.
-    spec_err : array-like
-        Error array of the spectrum.
-    popt : array-like
-        Optimal fit parameters from the fitting procedure.
-    func : callable
-        The model function used for fitting.
+    fit_result : dict
+        Dictionary containing fit results from fit_lya, including 'wl_fit', 'spec_fit',
+        'err_fit', 'popt', 'model', 'baseline', 'method', and 'param_dict'.
+    iden : str
+        Identifier for the source being fitted.
+    cluster : str
+        Cluster name for the source being fitted.
     save_plots : bool, optional
-        Whether to save the plot to disk. Default is False.
+        Whether to save the plots to disk.
     plot_dir : str, optional
-        Directory to save the plot if save_plots is True. Default is './'
-    ax_in : matplotlib.axes.Axes, optional
-        Matplotlib axis to plot on. If None, a new figure and axes are created.
+        Directory to save plots if save_plots is True.
     spec_type : str, optional
-        Type of spectrum being plotted (e.g., 'aper' for aperture). Used in filename if saving. Default is 'aper'.
-
-    Returns
-    -------
-    None
+        Type of spectrum being fitted (for labeling purposes, default: 'aper').
     """
-
-    # Create figure and axes
-    if ax_in is None:
-        fig, ax = plt.subplots(1, 1, figsize=(6, 4), facecolor='w')
-    else:
-        ax = ax_in
-    # Plot data with shaded region for errors
-    ax.plot(wave, spec, drawstyle='steps-mid', label='Data', color='black', alpha=0.7)
-    ax.fill_between(wave, spec - spec_err, spec + spec_err, color='grey', alpha=0.5, step='mid')
-
-    # Plot best-fit model at high resolution
-    hires_wave = np.linspace(np.min(wave), np.max(wave), 1000)
-    model_spec = func(hires_wave, *popt)
-    ax.plot(hires_wave, model_spec, label='Best-fit Model', color='red', linestyle='--', alpha=0.8)
-    # Labels and legend
-    ax.set_ylabel('Flux')
-    ax.legend()
-    ax.set_title(r'Lyman-$\alpha$ Fit')
-
-    # Axis labels
-    ax.set_xlabel(r'Wavelength (\AA)')
-    ax.set_ylabel('Flux Density')
-
-    plt.tight_layout()
+    # Extract data from fit_result
+    wave = fit_result['wl_fit']
+    spec = fit_result['spec_fit']
+    spec_err = fit_result['err_fit']
+    popt = fit_result['popt']
+    model_func = fit_result['model']
+    baseline = fit_result['baseline']
+    method = fit_result['method']
+    
+    # Get the Lya peak position for plotting range
+    lya_peak = fit_result['param_dict']['LPEAKR']
+    
+    # Determine the number of continuum parameters based on baseline type
+    if baseline == 'lin':
+        n_cont_params = 2  # CONT and SLOPE
+    elif baseline == 'damp':
+        n_cont_params = 4  # CONT, TAU, FWHM_ABS, LPEAK_ABS
+    else:  # 'const'
+        n_cont_params = 1  # CONT only
+    
+    # Dictionary of full baseline names for plotting
+    basenames = {
+        'const': 'Constant',
+        'lin': 'Linear',
+        'damp': 'Absorption'
+    }
+    
+    # Make a fine wavelength grid for plotting the model
+    finegrid = np.linspace(wave.min(), wave.max(), 1000)
+    
+    # Total model
+    final_model = model_func(finegrid, *popt)
+    
+    # Emission model only (extract the emission parameters)
+    emission_popt = popt[:-n_cont_params]
+    rpeak_popt = emission_popt[:4] if len(emission_popt) == 4 else emission_popt[4:8]
+    bpeak_model = 0
+    
+    if len(emission_popt) == 8:  # double peaked
+        rpeak_popt = emission_popt[4:8]
+        bpeak_popt = emission_popt[:4]
+        bpeak_model = models.lya_speak(finegrid, *bpeak_popt, 0.0)  # Append zero for continuum
+    
+    rpeak_model = models.lya_speak(finegrid, *rpeak_popt, 0.0)  # Append zero for continuum
+    
+    # Baseline only -- just subtract the emission model from the total
+    baseline_model = final_model - rpeak_model - bpeak_model
+    
+    # Now plot
+    plt.figure(figsize=(6, 3), facecolor='white')
+    
+    # Data with error bars
+    plt.step(wave, spec, where='mid', color='black', alpha=0.75, label='Data')
+    plt.fill_between(wave, spec - spec_err, spec + spec_err,
+                     color='gray', step='mid', alpha=0.3, label='Error', edgecolor='none')
+    
+    # Model components - Total model
+    plt.plot(finegrid, final_model, color='fuchsia', label='Best Fit')
+    
+    # Emission only
+    plt.plot(finegrid, rpeak_model, color='red', linestyle='--', label='Red Peak')
+    
+    if len(emission_popt) == 8:  # double peaked
+        plt.plot(finegrid, bpeak_model, color='royalblue', linestyle='--', label='Blue Peak')
+    
+    # Baseline only
+    plt.plot(finegrid, baseline_model, color='tab:green', linestyle=':', 
+             label=f'{basenames[baseline]} Baseline')
+    
+    plt.xlim(lya_peak - 50, lya_peak + 50)
+    plt.xlabel('Wavelength [\AA]')
+    plt.ylabel('Flux Density [$10^{-20}$\,erg\,s$^{-1}$\,cm$^{-2}$\,\AA$^{-1}$]')
+    plt.title(f"{cluster} {iden} " + r"Lyman-$\alpha$ Fit")
+    plt.legend()
+    
+    if save_plots:
+        plt.savefig(f"{plot_dir}/LYALPHA_fit_{spec_type}.png", dpi=300)
+    
+    safe_show()
 
     # Save plot if requested
     if save_plots:
@@ -326,8 +372,10 @@ def plot_lya_fit(wave, spec, spec_err, popt, func, save_plots=False, plot_dir='.
     safe_show()
     plt.close()
 
-def plot_line_fit(wave, spec, spec_err, popt, func, line_name, save_plots=False, plot_dir='./', ax_in=None, 
-                  method='single', spec_type='aper', initial_guesses=None):
+def plot_line_fit(wave, spec, spec_err, popt, func, line_name,
+                  save_plots=False, plot_dir=None, ax_in=None,
+                  cluster='', full_iden='', method='single', 
+                  spec_type='aper', initial_guesses=None):
     """
     Plot the spectral line fit results along with the data.
 
@@ -348,9 +396,13 @@ def plot_line_fit(wave, spec, spec_err, popt, func, line_name, save_plots=False,
     save_plots : bool, optional
         Whether to save the plot to disk. Default is False.
     plot_dir : str, optional
-        Directory to save the plot if save_plots is True. Default is './'
+        Directory to save the plot if save_plots is True. Default is None, which uses a default directory.
     ax_in : matplotlib.axes.Axes, optional
         Matplotlib axis to plot on. If None, a new figure and axes are created.
+    cluster : str, optional
+        Cluster name (e.g., 'A2744', 'MACS0416', etc.). Used in title and filename if saving. Default is ''.
+    full_iden : str, optional
+        Full identifier string of the source (e.g., 'E1234', 'X5678', etc.). Used in title and filename if saving. Default is ''.
     method : str, optional
         Fitting method: 'single' for single line, 'doublet' for doublet line. Default is 'single'.
     spec_type : str, optional
@@ -369,9 +421,13 @@ def plot_line_fit(wave, spec, spec_err, popt, func, line_name, save_plots=False,
     else:
         ax = ax_in
 
+    # If no cluster or iden or plot directory provided, raise warning when saving
+    if save_plots and (cluster == '' or full_iden == '') and plot_dir is None:
+        print("Warning: cluster name and full identifier not provided! Plot will be saved to working directory.")
+
     # Plot data with shaded region for errors
     ax.plot(wave, spec, drawstyle='steps-mid', label='Fitted Data', color='black', alpha=0.7)
-    ax.fill_between(wave, spec - spec_err, spec + spec_err, color='grey', alpha=0.5, step='mid')
+    ax.fill_between(wave, spec - spec_err, spec + spec_err, color='grey', alpha=0.5, step='mid', edgecolor='none')
 
     # Generate a finely sampled wavelength array for plotting the model
     hires_wave = np.linspace(np.min(wave), np.max(wave), 1000)
@@ -416,14 +472,18 @@ def plot_line_fit(wave, spec, spec_err, popt, func, line_name, save_plots=False,
     # Labels and legend
     ax.set_xlabel(r'Wavelength (\AA)')
     ax.set_ylabel('Flux Density')
-    ax.set_title(f'Fit to {line_name} Line')
+    ax.set_title(f'{cluster} {full_iden} {line_name} Fit')
     ax.legend()
 
     plt.tight_layout()
 
     # Save plot if requested
     if save_plots:
-        if not os.path.exists(plot_dir):
+        if plot_dir is None and cluster != '' and full_iden != '':
+            plot_dir = io.get_plot_dir(cluster, full_iden)  # Get directory for saving plots for this source
+        elif plot_dir is None:
+            plot_dir = './'  # Default to current directory
+        if not os.path.exists(plot_dir): # Create directory if it doesn't exist
             os.makedirs(plot_dir)
         plot_path = os.path.join(plot_dir, f'{line_name}_fit_{spec_type}.png')
         plt.savefig(plot_path, dpi=250)
