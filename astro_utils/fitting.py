@@ -1,3 +1,6 @@
+"""
+Fitting utilities for astronomical spectroscopy.
+"""
 
 from . import constants as const
 import numpy as np
@@ -518,11 +521,16 @@ def avgfunc(poptl, errfunc, sig_clip = 7.0):
     Parameters
     ----------
     poptl : array-like
-        List of parameter samples.
+        List or array of parameter samples from Monte Carlo realizations.
     errfunc : str
-        Error estimation method: 'stddev' or 'mad'.
+        Error estimation method. Options are:
+            'stddev'    : standard deviation (sigma-clipped)
+            'mad'       : median absolute deviation
+            'mad_adj'   : adjusted MAD (scaled to match stddev for Gaussian)
+            'stddev_X'  : sigma-clipped stddev with clipping value X
+            '84-16'     : 68% confidence interval from percentiles
     sig_clip : float, optional
-        Sigma clipping threshold for stddev (default: 7.0).
+        Sigma clipping threshold for stddev (default is 7.0).
 
     Returns
     -------
@@ -531,8 +539,8 @@ def avgfunc(poptl, errfunc, sig_clip = 7.0):
 
     Notes
     -----
-    - Uses sigma-clipped statistics for 'stddev'.
-    - Uses median absolute deviation for 'mad'.
+    Uses sigma-clipped statistics for 'stddev'.
+    Uses median absolute deviation for 'mad'.
 
     Examples
     --------
@@ -544,9 +552,27 @@ def avgfunc(poptl, errfunc, sig_clip = 7.0):
     if errfunc == 'stddev':
         _scs = sigma_clipped_stats(np.array(poptl), axis=0, maxiters=1, sigma=sig_clip)
         return [_scs[0], _scs[2]]
-    else:
+    elif errfunc == 'mad':
         medpopt = np.nanmedian(poptl, axis=0)
         return [medpopt, np.nanmedian(np.abs(poptl - medpopt), axis=0)]
+    elif errfunc == 'mad_adj':
+        medpopt = np.nanmedian(poptl, axis=0)
+        mad = np.nanmedian(np.abs(poptl - medpopt), axis=0)
+        # Adjust MAD to match stddev for Gaussian
+        adj_mad = mad * 1.4826
+        return [medpopt, adj_mad]
+    elif errfunc.startswith('stddev_'): # e.g., 'stddev_5.0'
+        try:
+            clip_val = float(errfunc.split('_')[1])
+        except (IndexError, ValueError):
+            clip_val = sig_clip
+        _scs = sigma_clipped_stats(np.array(poptl), axis=0, maxiters=1, sigma=clip_val)
+        return [_scs[0], _scs[2]]
+    elif errfunc == '84-16': # 68% confidence interval
+        p16 = np.nanpercentile(poptl, 16, axis=0)
+        p84 = np.nanpercentile(poptl, 84, axis=0)
+        medpopt = np.nanmedian(poptl, axis=0)
+        return [medpopt, (p84 - p16) / 2.0]
 
 def fit_mc(f, x, y, yerr, p0, bounds=None, niter=500, errfunc='mad',
            return_sample=False, chisq_thresh=np.inf, sig_clip=7.0,
@@ -728,7 +754,7 @@ def get_initial_guesses_from_catalog(linetab, linename, type='auto'):
     Examples
     --------
     >>> get_initial_guesses(linetab, 'LYALPHA')
-    {'LPEAK': 1216.0, 'FWHM': 300.0, 'AMP': 1.0}
+    {'LPEAK': 1216.0, 'DISP': 300.0, 'AMP': 1.0}
     """
     # Get the row(s) of the table for this line
     linerows = linetab[linetab['LINE'] == linename]
@@ -765,9 +791,11 @@ def get_initial_guesses_from_catalog(linetab, linename, type='auto'):
     
     # Lyman alpha must be treated separately due to different parameters
     if linename == 'LYALPHA':
+        default_peak_sep = 2.0 # default peak separation in rest frame
+        z_est = (linerow['LBDA_OBS'] / wavedict['LYALPHA']) - 1
         initial_guesses = {
             'AMPB': linerow['PEAK_OBS'], # amplitude of blue peak
-            'LPEAKB': linerow['LBDA_OBS'] - 7.5, # peak wavelength for blue peak
+            'LPEAKB': linerow['LBDA_OBS'] - default_peak_sep * (1 + z_est), # peak wavelength for blue peak
             'DISPB': linerow['FWHM_OBS'] / 2.355, # approximate dispersion equivalent (n.b. not exact for asymmetric gaussian)
             'ASYMB': -0.1,                 # asymmetry -- generic guess
             'AMPR': linerow['PEAK_OBS'], # amplitude of red peak
@@ -783,6 +811,7 @@ def get_initial_guesses_from_catalog(linetab, linename, type='auto'):
             'FWHM': linerow['FWHM_OBS'], # fwhm
             'FLUX2': sec_linerow['FLUX'] if sec_linerow is not None else linerow['FLUX'], 
             'CONT': linerow['CONT_OBS'], # continuum level
+            'SLOPE': 0.0,               # slope -- generic guess
         }
     else:
         initial_guesses = {
@@ -790,6 +819,7 @@ def get_initial_guesses_from_catalog(linetab, linename, type='auto'):
             'LPEAK': linerow['LBDA_OBS'], # peak wavelength
             'FWHM': linerow['FWHM_OBS'], # fwhm
             'CONT': linerow['CONT_OBS'], # continuum level
+            'SLOPE': 0.0,               # slope -- generic guess
         }
 
     return initial_guesses
@@ -831,43 +861,46 @@ def gen_bounds(initial_guesses, linename, input_bounds={}, force_sign=None):
         raise ValueError(f"Line {linename} not found in wavelength dictionary.")
     if linename == 'LYALPHA' and force_sign != 'positive':
         print("WARNING: Fitting Lyman alpha allowing negative solution! force_sign set to 'positive' recommended.")
+
+    # Get central peak for Lya if applicable
+    cen_r_init = np.nan
+    lpeak_key = 'LPEAK'
+    if linename == 'LYALPHA': # Gets the central peak for Lya double peak or single peak
+        lpeak_key = 'LPEAKR' if 'LPEAKR' in initial_guesses else 'LPEAK' # This can vary based on input
+        cen_r_init = initial_guesses[lpeak_key]
     
     rest_wave = wavedict[linename]
-    z         = rest_wave / initial_guesses['LPEAK'] - 1
+    z         = initial_guesses[lpeak_key] / rest_wave - 1
 
-    default_flux_min = -100 * initial_guesses.get('FLUX', 100) if force_sign != 'positive' else 0
-    default_flux_max = 100 * initial_guesses.get('FLUX', 100) if force_sign != 'negative' else 0
+    default_flux_min = -100 * np.abs(initial_guesses.get('FLUX', 100)) if force_sign != 'positive' else 0
+    default_flux_max = 100 * np.abs(initial_guesses.get('FLUX', 100)) if force_sign != 'negative' else 0
     default_lpeak_tol = 6.25 / 4  # Angstroms in rest-frame
-    default_lpeakb_tol = [-15 / 4, 10 / 4] # How wide an area around LPEAKB to allow
-    default_lpeakr_tol = [-5 / 4, 10 / 4]  # How wide an area around LPEAKR to allow
-
-    cen_r_init = np.nan
-    if linename == 'LYALPHA': # Gets the central peak for Lya double peak or single peak
-        lpeak_key = 'LPEAKR' if 'LPEAKR' in initial_guesses else 'LPEAK'
-        cen_r_init = initial_guesses[lpeak_key]
+    default_lpeakb_tol = [-3, -1] # What region relative to LPEAKR to allow for LPEAKB in rest frame
+    default_lpeakr_tol = [-1, 3]  # How wide an area around LPEAKR to allow in rest frame
 
     defaults = {
-        'LPEAK':  (initial_guesses['LPEAK'] - default_lpeak_tol * (1 + z), 
-                  initial_guesses['LPEAK'] + default_lpeak_tol * (1 + z)),
-        'FWHM':   (2.4, np.abs(spectro.vel2wave(300, rest_wave, 0) - spectro.vel2wave(0, rest_wave, 0)) * (1 + z)),
+        'LPEAK':  (initial_guesses.get('LPEAK', np.nan) - default_lpeak_tol * (1 + z), # if the user didn't provide LPEAK, set to nan so bounds will error out
+                  initial_guesses.get('LPEAK', np.nan) + default_lpeak_tol * (1 + z)),
+        'FWHM':   (2.0, np.abs(spectro.vel2wave(300, rest_wave, 0) - spectro.vel2wave(0, rest_wave, 0)) * (1 + z)),
         'FLUX':   (default_flux_min, default_flux_max),
+        'FLUX2':  (default_flux_min, default_flux_max), # for doublets
         'CONT':   (-50, 2000), # appropriate for sky-subtracted MUSE LAE spectra
         'AMP':    (default_flux_min, 10000), # amplitude bounds -- note AMP is used for Lya
-        'DISP':   (0.16 * (1 + z), 1.6 * (1 + z)), # dispersion bounds for Lya
+        'DISP':   (0.2 * (1 + z), 1 * (1 + z)), # dispersion bounds for Lya
         'ASYM':   (-0.5, 0.5), # asymmetry bounds for Lya
         'AMPB':   (default_flux_min, 10000), # amplitude of blue peak for Lya
-        'LPEAKB': (initial_guesses['LPEAKB'] + default_lpeakb_tol[0] * (1 + z), 
-                   initial_guesses['LPEAKB'] + default_lpeakb_tol[1] * (1 + z)),
-        'DISPB':  (0.16 * (1 + z), 1.6 * (1 + z)), # dispersion of blue peak for Lya
+        'LPEAKB': (initial_guesses.get('LPEAKR', np.nan) + default_lpeakb_tol[0] * (1 + z), 
+                   initial_guesses.get('LPEAKR', np.nan) + default_lpeakb_tol[1] * (1 + z)),
+        'DISPB':  (0.2 * (1 + z), 1 * (1 + z)), # dispersion of blue peak for Lya
         'ASYMB':  (-0.5, 0.5), # asymmetry of blue peak for Lya
         'AMPR':   (default_flux_min, 10000), # amplitude of red peak for Lya
-        'LPEAKR': (initial_guesses['LPEAKR'] + default_lpeakr_tol[0] * (1 + z), 
-                   initial_guesses['LPEAKR'] + default_lpeakr_tol[1] * (1 + z)),
-        'DISPR':  (0.16 * (1 + z), 1.6 * (1 + z)), # dispersion of red peak for Lya
+        'LPEAKR': (initial_guesses.get('LPEAKR', np.nan) + default_lpeakr_tol[0] * (1 + z), 
+                   initial_guesses.get('LPEAKR', np.nan) + default_lpeakr_tol[1] * (1 + z)),
+        'DISPR':  (0.2 * (1 + z), 1 * (1 + z)), # dispersion of red peak for Lya
         'ASYMR':  (-0.5, 0.5), # asymmetry of red peak for Lya
         'SLOPE':  (-np.inf, np.inf), # slope for linear continuum
         'TAU':    (-50, 2000), # optical depth for Damped Lyman alpha profile
-        'FWHM':   ((spectro.vel2wave(100, rest_wave, 0) - spectro.vel2wave(0, rest_wave, 0)) * (1 + z), 
+        'FWHM_ABS':   ((spectro.vel2wave(100, rest_wave, 0) - spectro.vel2wave(0, rest_wave, 0)) * (1 + z), 
                   (spectro.vel2wave(500, rest_wave, 0) - spectro.vel2wave(0, rest_wave, 0)) * (1 + z)), # FWHM bounds
         'LPEAK_ABS': (cen_r_init - 3.33 * (1 + z), cen_r_init + 3.33 * (1 + z))
     }
@@ -878,9 +911,10 @@ def gen_bounds(initial_guesses, linename, input_bounds={}, force_sign=None):
 
     return bounds
 
-def prep_inputs(initial_guesses, linename, z_lya, bounds={}):
+def prep_inputs(initial_guesses, linename, z_lya=None, bounds={}):
     """
-    Prepare and validate input parameters for fitting routines.
+    Prepare and validate input parameters for fitting routines using Lyman alpha redshift as a 
+    reference point.
 
     Parameters
     ----------
@@ -917,22 +951,23 @@ def prep_inputs(initial_guesses, linename, z_lya, bounds={}):
     # Get the approximate expected observed wavelength based on z_lya
     if linename not in wavedict:
         raise ValueError(f"Line {linename} not found in wavelength dictionary.")
-    expected_wavelength = wavedict[linename] * (1 + z_lya)
 
     # Calculate the velocity buffer from the bounds if provided, else default to +/- 6.25 Angstroms
     wave_buffer = bounds.get('LPEAK', (initial_guesses['LPEAK'] - 6.25, initial_guesses['LPEAK'] + 6.25))
     wave_buffer = (wave_buffer[1] - wave_buffer[0]) / 2.0
 
-    # If the initial guess for LPEAK is more than 500 km/s away from expected, raise warning
-    # and reset to generic offset of -200 km/s
-    lpeak_init = initial_guesses['LPEAK']
-    delta_v = spectro.wave2vel(lpeak_init, wavedict[linename], z_lya)
-    if abs(delta_v) > 500:
-        warnings.warn(f"Initial guess for LPEAK ({lpeak_init:.2f} Å) is {delta_v:.1f} km/s"
-                      f" from Lyman alpha ({expected_wavelength:.2f} Å); resetting to -200 km/s offset.")
-        initial_guesses['LPEAK'] = spectro.vel2wave(-200, wavedict[linename], z_lya)
-        if 'LPEAK' in bounds:
-            bounds['LPEAK'] = (initial_guesses['LPEAK'] - 6.25, initial_guesses['LPEAK'] + 6.25)
+    if z_lya is not None:
+        # If the initial guess for LPEAK is more than 500 km/s away from expected, raise warning
+        # and reset to generic offset of -200 km/s
+        expected_wavelength = wavedict[linename] * (1 + z_lya)
+        lpeak_init = initial_guesses['LPEAK']
+        delta_v = spectro.wave2vel(lpeak_init, wavedict[linename], z_lya)
+        if abs(delta_v) > 500:
+            warnings.warn(f"Initial guess for LPEAK ({lpeak_init:.2f} Å) is {delta_v:.1f} km/s"
+                        f" from Lyman alpha ({expected_wavelength:.2f} Å); resetting to -200 km/s offset.")
+            initial_guesses['LPEAK'] = spectro.vel2wave(-200, wavedict[linename], z_lya)
+            if 'LPEAK' in bounds:
+                bounds['LPEAK'] = (initial_guesses['LPEAK'] - 6.25, initial_guesses['LPEAK'] + 6.25)
 
     # Check values of initial guesses and bounds for bad values
     for param, value in initial_guesses.items():
@@ -940,12 +975,12 @@ def prep_inputs(initial_guesses, linename, z_lya, bounds={}):
             raise ValueError(f"Initial guess for {param} is not finite: {value}")
         if param in bounds:
             lower, upper = bounds[param]
-            if not (np.isfinite(lower) and np.isfinite(upper)):
-                raise ValueError(f"Bounds for {param} are not finite: {bounds[param]}")
             if lower >= upper:
-                raise ValueError(f"Lower bound must be less than upper bound for {param}: {bounds[param]}")
+                raise ValueError(f"Lower bound must be less than upper bound for {param}:"
+                                 f" ({bounds[param][0]:.5f}, {bounds[param][1]:.5f})")
             if not (lower <= value <= upper):
-                warnings.warn(f"Initial guess for {param} ({value}) is outside bounds {bounds[param]};"
+                warnings.warn(f"Initial guess for {param} ({value:.5f}) is outside bounds"
+                              f" ({bounds[param][0]:.5f}, {bounds[param][1]:.5f});"
                                "adjusting to midpoint.")
                 initial_guesses[param] = (lower + upper) / 2.0
 
@@ -980,6 +1015,11 @@ def check_inputs(p0, bounds):
     >>> check_inputs([np.nan, 5], ([0, 0], [10, 10]))
     ([5.0, 5], ([0, 0], [10, 10]))
     """
+    # Check that lower bounds are less than upper bounds
+    for i in range(len(bounds[0])):
+        if bounds[0][i] >= bounds[1][i]:
+            raise ValueError(f"Lower bound {bounds[0][i]} is not less than upper bound {bounds[1][i]} for parameter {i}")
+
     p0_checked = []
     for i, val in enumerate(p0):
         lower, upper = bounds[0][i], bounds[1][i]
@@ -1009,9 +1049,10 @@ def check_inputs(p0, bounds):
                     val = lower * 1.1 if lower != 0 else lower + 0.1
             else:
                 val = (lower + upper) / 2.0
-            print(f"WARNING: Initial guess {original_val} is outside bounds ({lower}, {upper}); adjusting to {val:.3e}")
+            print(f"WARNING: {i}-th initial guess {original_val} is outside bounds ({lower:.5f}, {upper:.5f}); adjusting to {val:.3e}")
             
         p0_checked.append(val)
+    
     return p0_checked, bounds
 
 
@@ -1082,10 +1123,11 @@ def condition_initial_guesses(initial_guesses, wavelength, spectrum, errors, lin
     return initial_guesses
 
 
-def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {},
-             continuum_buffer = 25., plot_result = True, ax_in = None,
-             bootstrap_params: Optional[BootstrapParams] = None, save_plots=False, plot_dir=None,
-             spec_type='aper'):
+def fit_line(wavelength, spectrum, errors, linename, initial_guesses,
+             bounds = {}, continuum_buffer = 25., plot_result = True, 
+             ax_in = None, bootstrap_params: Optional[BootstrapParams] = None, 
+             save_plots=False, plot_dir=None, cluster='', full_iden='',
+             spec_type='aper', lya_z=None):
     """
     Fit a single or double Gaussian profile to a spectral line (plus its doublet partner if present).
     If the line is Lyman alpha, raises an error (use specialized function).
@@ -1117,8 +1159,14 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
         If True, saves the plot to a file (default: False).
     plot_dir : str, optional
         Directory to save plots if save_plots is True.
+    cluster : str, optional
+        Cluster name for labelling and saving plots (default: '').
+    full_iden : str, optional
+        Full identifier for labelling and saving plots (default: '').
     spec_type : str, optional
         Type of spectrum being fitted (for labeling purposes, default: 'aper').
+    lya_z : float, optional
+        Redshift of Lyman alpha line (used for sanity check of LPEAK -- if None, no check performed).
 
     Returns
     -------
@@ -1184,7 +1232,14 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
 
     # Condition initial guesses using the actual data
     initial_guesses = condition_initial_guesses(initial_guesses, wl_fit, spec_fit, err_fit, linename)
+    # Generate bounds
+    bounds = gen_bounds(initial_guesses, linename, input_bounds=bounds)
 
+    # Prepare and validate inputs
+    initial_guesses, bounds = prep_inputs(initial_guesses, linename,
+                                          z_lya=lya_z,
+                                          bounds=bounds)
+    
     # Get initial guesses
     flux_init       = initial_guesses.get('FLUX', 10)
     fluxsecond_init = initial_guesses.get('FLUX2', flux_init) # this will be used if fitting a doublet
@@ -1193,12 +1248,12 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
     slope_init      = initial_guesses.get('SLOPE', 0)
 
     # Get bounds
-    lpeak_bounds = bounds.get('LPEAK', (lpeak_init - 6.25, lpeak_init + 6.25))
-    flux_bounds = bounds.get('FLUX', (-100 * np.abs(flux_init), 100 * np.abs(flux_init)))
-    fluxsecond_bounds = bounds.get('FLUX2', (-100 * np.abs(fluxsecond_init), 100 * np.abs(fluxsecond_init))) # this will be used if fitting a doublet
-    fwhm_bounds = bounds.get('FWHM', (2.4, (300 / c) * lpeak_init)) # approximately 300 km/s upper limit
-    cont_bounds = bounds.get('CONT', (-50, 1000))
-    slope_bounds = bounds.get('SLOPE', (-np.inf, np.inf))
+    lpeak_bounds = bounds['LPEAK']
+    flux_bounds = bounds['FLUX']
+    fluxsecond_bounds = bounds.get('FLUX2', (np.nan, np.nan) if linename not in const.flines else flux_bounds) # this will be used if fitting a doublet
+    fwhm_bounds = bounds['FWHM']
+    cont_bounds = bounds['CONT']
+    slope_bounds = bounds['SLOPE']
 
 
     # Initialise fit result dictionary that the function will return
@@ -1408,13 +1463,13 @@ def fit_line(wavelength, spectrum, errors, linename, initial_guesses, bounds = {
             poptg, model, linename,
             save_plots=save_plots,
             plot_dir=plot_dir if plot_dir is not None else './',
+            cluster=cluster,
+            full_iden=full_iden,
+            spec_type=spec_type,
             ax_in=ax_in,
             method=method,
-            spec_type=spec_type,
             initial_guesses=initg
         )
-        
-        # Note: plot_line_fit now handles show/close internally when ax_in is None
 
     return fit_result
 
@@ -1528,7 +1583,7 @@ def refit_other_line(wave, spec, spec_err, row, line_tab_row = None, width=25,
     bounds = {
         'FLUX': (-10000, 10000),
         'LPEAK': (cen_init - 6.25, cen_init + 6.25),
-        'FWHM': (2.4, (300. / c) * cen_init),
+        'FWHM': (2.0, (300. / c) * cen_init),
         'CONT': (-50, 2000),
         'SLOPE': (-1000, 1000),
     }

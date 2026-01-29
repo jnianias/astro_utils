@@ -18,6 +18,7 @@ from .lya_profile import LyaProfile
 from scipy.optimize import curve_fit
 
 w_lya = const.wavedict['LYALPHA']  # Lyman-alpha rest wavelength in Angstroms
+c = const.c # Speed of light constant
 
 def get_reduced_chisq(y, ymodel, yerr, nparams):
     """
@@ -46,13 +47,21 @@ def get_reduced_chisq(y, ymodel, yerr, nparams):
         return np.inf
     return chisq / dof
 
+# Default Monte Carlo parameters for bootstrapping
+default_bootstrap_params = {
+    'niter': 1000,
+    'autocorrelation': False,
+    'max_nfev': 2000,
+    'errfunc': '84-16'  # Use 68% confidence interval for errors
+}
+
 def fit_lya_line(wave, spec, spec_err, initial_guesses, iden, cluster, baseline='auto', width=50,
-                 bounds={}, gen_bounds_kwargs={}, plot_result=False, mc_niter=1000, rchsq_thresh=2.0,
-                 save_plots=False, plot_dir='./', ax_in=None, spec_type='aper'):
+                 bounds={}, plot_result=False, bootstrap_params=default_bootstrap_params,
+                use_bootstrap=True, rchsq_thresh=2.0, save_plots=False, plot_dir='./', spec_type='aper'):
     """
     Master function to fit a Lyman alpha profile to the provided spectrum. Can handle different baseline types,
     and automatically selects between single and double-peaked profiles unless specified otherwise, can use Monte
-    Carlo resampling to estimate parameter uncertainties, and can produce diagnostic plots.
+    Carlo resampling (bootstrapping) to estimate parameter uncertainties, and can produce diagnostic plots.
 
     Parameters
     ----------
@@ -70,12 +79,12 @@ def fit_lya_line(wave, spec, spec_err, initial_guesses, iden, cluster, baseline=
         Width around the line center to consider for fitting (default is 50).
     bounds : dict, optional
         Dictionary of bounds for the fitting parameters.
-    gen_bounds_kwargs : dict, optional
-        Additional keyword arguments for generating bounds.
     plot_result : bool, optional
         Whether to plot the fitting result.
-    mc_niter : int, optional
-        Number of Monte Carlo iterations for error estimation (default is 1000).
+    bootstrap_params : dict, optional
+        Parameters for bootstrap error estimation.
+    use_bootstrap : bool, optional
+        Whether to use bootstrap resampling for error estimation.
     rchsq_thresh : float, optional
         Reduced chi-squared threshold for accepting a fit when baseline='auto' (default is 2.0).
     save_plots : bool, optional
@@ -96,29 +105,33 @@ def fit_lya_line(wave, spec, spec_err, initial_guesses, iden, cluster, baseline=
     if baseline == 'auto':
         # Try constant, then linear, then damped baselines
         fit_result = fit_lya_autobase(wave, spec, spec_err, initial_guesses, iden,
-                                        cluster, bounds=bounds, gen_bounds_kwargs=gen_bounds_kwargs, 
+                                        cluster, bounds=bounds, 
                                         width=width, plot_result=plot_result,
-                                        mc_niter=mc_niter, rchsq_thresh=rchsq_thresh,
-                                        save_plots=save_plots, plot_dir=plot_dir)
+                                        use_bootstrap=use_bootstrap, bootstrap_params=bootstrap_params,
+                                        rchsq_thresh=rchsq_thresh,
+                                        save_plots=save_plots, plot_dir=plot_dir,
+                                        spec_type=spec_type)
         return fit_result
     else:
         # Fit with specified baseline type
-        fit_result = fit_lya_line(wave, spec, spec_err, initial_guesses, iden, cluster,
-                                    bounds=bounds, gen_bounds_kwargs=gen_bounds_kwargs,
+        fit_result = fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
+                                    bounds=bounds, 
                                     width=width, baseline=baseline,
                                     plot_result=plot_result,
-                                    mc_niter=mc_niter,
-                                    save_plots=save_plots, plot_dir=plot_dir)
+                                    use_bootstrap=use_bootstrap,
+                                    bootstrap_params=bootstrap_params,
+                                    save_plots=save_plots, plot_dir=plot_dir,
+                                    spec_type=spec_type)
         return fit_result
 
 
 def fit_lya_autobase(wave, spec, spec_err, initial_guesses, iden, cluster, 
-                     width=50, bounds={}, plot_result=True, mc_niter=500, 
-                     rchsq_thresh=2.0, save_plots = False, plot_dir = './'):
+                     width=50, bounds={}, plot_result=True, use_bootstrap=True,
+                     bootstrap_params=default_bootstrap_params,
+                     rchsq_thresh=2.0, save_plots = False, plot_dir = './',
+                     spec_type='aper'):
     """
-    Fit the Lyman alpha line based on prior fitting results (if present). Here,
-    we compare single and double-peaked fits and return the best one based on reduced chi-squared.
-    Baselines are handled in increasing order of complexity (const, lin, damp).
+    Fit the Lyman alpha line using multiple baseline types and select the best fit
     
     Parameters
     ----------
@@ -134,8 +147,6 @@ def fit_lya_autobase(wave, spec, spec_err, initial_guesses, iden, cluster,
         The width (in Angstroms) around the Lya peak to use for fitting.
     bounds : dict, optional
         Dictionary of bounds for the fitting parameters.
-    gen_bounds_kwargs : dict, optional
-        Additional keyword arguments for generating bounds.
     plot_result : bool, optional
         Whether to plot the fitting result.
     mc_niter : int, optional
@@ -146,6 +157,8 @@ def fit_lya_autobase(wave, spec, spec_err, initial_guesses, iden, cluster,
         Whether to save the plots to disk.
     plot_dir : str, optional
         Directory to save plots if save_plots is True.
+    spec_type : str, optional
+        Type of spectrum being fitted (for labeling purposes, default: 'aper').
 
     Returns
     -------
@@ -156,36 +169,58 @@ def fit_lya_autobase(wave, spec, spec_err, initial_guesses, iden, cluster,
         Empty dict {} if all fits failed.
     """
     # First use a constant baseline with the refit_lya_line function
+    # Suppress plotting for intermediate fits
     fit_const = fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster, 
                         bounds=bounds, width=width, baseline='const', 
-                        plot_result=plot_result, mc_niter=mc_niter, 
-                        save_plots=save_plots, plot_dir=plot_dir)
+                        plot_result=False, use_bootstrap=use_bootstrap, 
+                        bootstrap_params=bootstrap_params,
+                        save_plots=False, plot_dir=plot_dir,
+                        spec_type=spec_type)
     
     # Check the reduced chi-squared of the fit -- if it's good enough, return it
     if fit_const and fit_const.get('reduced_chisq') and fit_const['reduced_chisq'] < rchsq_thresh:
         print("Constant baseline fit is good enough; returning result.")
+        if plot_result:
+            plot.plot_lya_fit_result(fit_const, iden, cluster, save_plots=save_plots, 
+                               plot_dir=plot_dir, spec_type=spec_type)
         return fit_const
     
     # If not, try a linear baseline
     print("Trying linear baseline fit...")
-    fit_lin = fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster, 
+    initial_guesses_lin = initial_guesses.copy()
+    initial_guesses_lin['SLOPE'] = 0.0  # Add a slope initial guess
+    fit_lin = fit_lya(wave, spec, spec_err, initial_guesses_lin, iden, cluster, 
                       bounds=bounds, width=width, baseline='lin',
-                      plot_result=plot_result, mc_niter=mc_niter, 
-                      save_plots=save_plots, plot_dir=plot_dir)
+                      plot_result=False, use_bootstrap=use_bootstrap, 
+                      bootstrap_params=bootstrap_params,
+                      save_plots=False, plot_dir=plot_dir,
+                      spec_type=spec_type)
 
     if fit_lin and fit_lin.get('reduced_chisq') and fit_lin['reduced_chisq'] < rchsq_thresh:
         print("Linear baseline fit is good enough; returning result.")
+        if plot_result:
+            plot.plot_lya_fit_result(fit_lin, iden, cluster, save_plots=save_plots, 
+                                    plot_dir=plot_dir, spec_type=spec_type)
         return fit_lin
     
     # If still not good enough, try a damped Lyman alpha baseline
     print("Trying damped Lyman alpha baseline fit...")
-    fit_damp = fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster, 
+    initial_guesses_damp = initial_guesses.copy()
+    initial_guesses_damp['TAU'] = 20.0  # Add initial guess for tau
+    initial_guesses_damp['FWHM_ABS'] = (150 / c) * 1215.67 * (initial_guesses['LPEAKR'] / w_lya)  # Initial guess for fwhm in observed frame
+    initial_guesses_damp['LPEAK_ABS'] = initial_guesses['LPEAKR'] - 2.5  # Initial guess for absorption peak
+    fit_damp = fit_lya(wave, spec, spec_err, initial_guesses_damp, iden, cluster, 
                        bounds=bounds, width=width, baseline='damp',
-                       plot_result=plot_result, mc_niter=mc_niter, 
-                       save_plots=save_plots, plot_dir=plot_dir)
+                       plot_result=False, use_bootstrap=use_bootstrap, 
+                       bootstrap_params=bootstrap_params,
+                       save_plots=False, plot_dir=plot_dir,
+                       spec_type=spec_type)
 
     if fit_damp and fit_damp.get('reduced_chisq') and fit_damp['reduced_chisq'] < rchsq_thresh:
         print("Damped Lyman alpha baseline fit is good enough; returning result.")
+        if plot_result:
+            plot.plot_lya_fit_result(fit_damp, iden, cluster, save_plots=save_plots, 
+                               plot_dir=plot_dir, spec_type=spec_type)
         return fit_damp
     
     # If none of the fits were good enough, return the one with the lowest reduced chi-squared
@@ -195,14 +230,20 @@ def fit_lya_autobase(wave, spec, spec_err, initial_guesses, iden, cluster,
     best_fit_type = ['const', 'lin', 'damp'][fits.index(best_fit)] if best_fit in fits else 'unknown'
     rchsq_value = best_fit.get('reduced_chisq', np.nan)
     print(f"Returning best fit ({best_fit_type}) with reduced chi-squared = {rchsq_value:.2f}")
+    
+    # Plot the best fit if requested
+    if plot_result and best_fit:
+        plot.plot_lya_fit_result(best_fit, iden, cluster, save_plots=save_plots, 
+                           plot_dir=plot_dir, spec_type=spec_type)
+    
     return best_fit
 
 def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster, 
-            bounds={}, width=50, baseline='const', plot_result=True, 
-            mc_niter=1000, save_plots=False, plot_dir='./'):
+            bounds={}, width=50, baseline='const', plot_result=True, use_bootstrap=True, 
+            bootstrap_params=default_bootstrap_params,
+            save_plots=False, plot_dir='./', spec_type='aper'):
     """
-    Refit the Lyman alpha line based on prior fitting results. Here, we compare single and double-peaked fits
-    and return the best one based on reduced chi-squared.
+    Fit the Lyman alpha line with specified baseline type using provided initial parameters.
     
     Parameters
     ----------
@@ -220,20 +261,22 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
         Cluster name for the source being fitted.
     bounds : dict, optional
         Dictionary of bounds for the fitting parameters.
-    gen_bounds_kwargs : dict, optional
-        Additional keyword arguments for generating bounds.
     width : float, optional
         The width (in Angstroms) around the Lya peak to use for fitting.
     baseline : str, optional
         Baseline type ('const', 'lin', 'damp').
     plot_result : bool, optional
         Whether to plot the fitting result.
-    mc_niter : int, optional
-        Number of Monte Carlo iterations for error estimation.
+    use_bootstrap : bool, optional
+        Whether to use bootstrap resampling for error estimation.
+    bootstrap_params : dict, optional
+        Parameters for bootstrap error estimation.
     save_plots : bool, optional
         Whether to save the plots to disk.
     plot_dir : str, optional
         Directory to save plots if save_plots is True.
+    spec_type : str, optional
+        Type of spectrum being fitted (for labeling purposes, default: 'aper').
     
     Returns
     -------
@@ -259,6 +302,9 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
     if np.isnan(lya_peak):
         raise ValueError("\nInitial guess for LPEAKR is NaN; cannot proceed with fitting.")
     
+    # Get initial redshift guess
+    z_init = (lya_peak / w_lya) - 1
+    
     # Initial guesses from the table, or semi-generic if not available
     try:
         amp_r_init = initial_guesses['AMPR'] #These will throw an error if not present, which is the desired behavior
@@ -273,9 +319,6 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
     wid_b_init = initial_guesses.get('DISPB', initial_guesses['DISPR'])
     asy_b_init = -1 * initial_guesses['ASYMR']
     cont_init  = [initial_guesses.get('CONT', 0.0)] # This needs to be a list for appending later
-    
-    # Speed of light constant
-    c = const.c
 
     # Make a list of parameter names for reference in the order used by the model
     param_names = ['AMPB', 'LPEAKB', 'DISPB', 'ASYMB',
@@ -284,29 +327,15 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
     
     # Append baseline parameters if needed
     if baseline == 'lin':
-        slope_init = initial_guesses.get('SLOPE', 0.0)
+        slope_init = initial_guesses['SLOPE'] # If not present, this will throw an error as desired
         param_names.append('SLOPE')
         cont_init = [*cont_init, slope_init]
-        # cont_lower = (-50, -np.inf) # The bound on cont is chosen to allow only small negative values
-        # cont_upper = (2000, np.inf) # The bound on cont is chosen to allow reasonable positive values
     elif baseline == 'damp':
-        # Get redshift to adjust initial guess for fwhm as needed
-        z_init = initial_guesses['Z'] if not np.isnan(initial_guesses['Z']) else cen_r_init / 1215.67 - 1
-        tau_init = initial_guesses['TAU'] if not np.isnan(initial_guesses['TAU']) else 20.0
-        # Initial guess for fwhm is 150km/s in rest frame, which we convert to observed frame wavelength
-        fwhm_init = (150 / c) * 1215.67 * (1 + z_init)
-        # If there is a value in the table, use it instead
-        fwhm_init = initial_guesses['FWHM'] if not np.isnan(initial_guesses['FWHM']) else fwhm_init
-        # Initial guess for LPEAK_ABS is 2.5 Angstroms blueward of the red peak
-        lpeak_abs_init = initial_guesses['LPEAK_ABS'] if not np.isnan(initial_guesses['LPEAK_ABS']) else cen_r_init - 2.5
-        param_names.extend(['TAU', 'FWHM', 'LPEAK_ABS'])
+        tau_init = initial_guesses['TAU'] # If not present, this will throw an error as desired
+        fwhm_init = initial_guesses['FWHM_ABS'] # If not present, this will throw an error as desired
+        lpeak_abs_init = initial_guesses['LPEAK_ABS'] # If not present, this will throw an error as desired
+        param_names.extend(['TAU', 'FWHM_ABS', 'LPEAK_ABS'])
         cont_init = [*cont_init, tau_init, fwhm_init, lpeak_abs_init]
-        # Impose bounds of fwhm > 1.25 Angstroms observed frame and less than 500km/s
-        # cont_lower = (-50 , 10, (100 / c) * 1215.67 * (1 + z_init), lpeak_abs_init - 10)
-        # cont_upper = (2000, 100, (500 / c) * 1215.67 * (1 + z_init), lpeak_abs_init + 10)
-    # else:
-    #     cont_lower = (-50,)
-    #     cont_upper = (2000,)
 
     # Define initial parameters for the double-peaked model
     p0 = [amp_b_init, cen_b_init, wid_b_init, asy_b_init,
@@ -314,22 +343,10 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
             *cont_init]  # baseline
     
     # Define bounds for the parameters
-    bounds = gen_bounds(initial_guesses, 'LYALPHA', input_bounds=bounds)
-    # Check if bounds dict contains all required parameters in param_names
-    missing_params = [param for param in param_names if param not in bounds[0] or param not in bounds[1]]
-    if missing_params:
-        raise ValueError(f"Bounds dictionary is missing entries for parameters: {missing_params}")
+    dpeak_bounds = gen_bounds(initial_guesses, 'LYALPHA', input_bounds=bounds, force_sign='positive')
     
-    bounds = [[bounds[0][i] for i in range(len(param_names))],
-              [bounds[1][i] for i in range(len(param_names))]]
-    # bounds = (
-    #     [0, cen_b_init - 15, 0.625, -0.5, 
-    #      0, cen_r_init - 5,  0.625, -0.5, 
-    #      *cont_lower],  # lower bounds
-    #     [10000, cen_b_init + 10, 6, 0.1, 
-    #      10000, cen_r_init + 10, 6, 0.5, 
-    #      *cont_upper]   # upper bounds
-    # )
+    dpeak_bounds = [[dpeak_bounds[k][0] for k in param_names],
+                    [dpeak_bounds[k][1] for k in param_names]]
 
     # Figure out which function to use based on baseline type
     mdl_func = mdl.lya_dpeak_lin if baseline == 'lin' else \
@@ -342,7 +359,7 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
     
     # Make sure there are enough good points to fit
     if fitmask.sum() < 10:
-        print(f"Not enough good points to fit Lya for {row['CLUSTER']} {row['iden']}.")
+        print(f"Not enough good points to fit Lya for {cluster} {iden}.")
         return {}
 
     best_popt, popt_double, popt_single = None, None, None
@@ -353,15 +370,16 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
     best_method = None
 
     # First fit the double-peaked model, trying multiple initial guesses for the blue peak
-    for shift in [0, -5, 5, -10, 10]: # Perform five initial fits, moving the blue peak initial guess each time
+    shifts = np.array([0, -0.5, 0.5, -0.9, 0.9]) * (1 + z_init)  # Angstrom shifts for blue peak initial guess
+    for shift in shifts: # Perform five initial fits, moving the blue peak initial guess each time
         p0[1] = cen_b_init + shift
         
         # Make sure the initial guesses are always within bounds
-        p0, bounds = check_inputs(p0, bounds)
+        p0, dpeak_bounds = check_inputs(p0, dpeak_bounds)
         try:
             popt, pcov = curve_fit(mdl_func, wave[fitmask], spec[fitmask],
                                    p0=p0, sigma=spec_err[fitmask],
-                                   bounds=bounds, absolute_sigma=True,
+                                   bounds=dpeak_bounds, absolute_sigma=True,
                                    max_nfev = 100000, method = 'trf')
             perr = np.sqrt(np.diag(pcov))
             if spectro.is_reasonable_dpeak(popt, perr):
@@ -376,13 +394,9 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
         except (RuntimeError, ValueError) as e:
             print(f"Fit attempt with blue peak shift {shift} failed: {e}")
             continue
-    # if best_popt is not None and best_perr is not None:
-    #     print(f"Double-peaked fit successful for {row['CLUSTER']} {row['iden']}.")
-    #     # If the fit was successful, populate the parameter dictionary
-    #     param_dict = dict(zip(param_names, best_popt))
-    #     error_dict = dict(zip(param_names, best_perr))
+
     if popt_double is None or perr_double is None:
-        print(f"No reasonable double-peaked fit found for {row['CLUSTER']} {row['iden']}.")
+        print(f"No reasonable double-peaked fit found for {cluster} {iden}.")
         print("Moving to single-peaked fit...")
 
     # Now perform a single-peaked fit (with multiple attempts in case of failure)
@@ -399,25 +413,27 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
         single_initial_guesses['SLOPE'] = slope_init
     elif baseline == 'damp':
         single_initial_guesses['TAU'] = tau_init
-        single_initial_guesses['FWHM'] = fwhm_init
+        single_initial_guesses['FWHM_ABS'] = fwhm_init
         single_initial_guesses['LPEAK_ABS'] = lpeak_abs_init
     
-    bounds_single = gen_bounds(single_initial_guesses, 'LYALPHA', input_bounds=bounds)
-    # bounds_single = (
-    #     [0,     cen_r_init - 5, 1.25, -0.5,  *cont_lower],  # lower bounds
-    #     [10000, cen_r_init + 5, 50,    0.5,  *cont_upper]   # upper bounds
-    # )
+    # Generate bounds for single peak
+    speak_bounds = gen_bounds(single_initial_guesses, 'LYALPHA', input_bounds=bounds, force_sign='positive')
+    speak_bounds = [[speak_bounds[k][0] for k in param_names if k[-1] != 'B'],
+                     [speak_bounds[k][1] for k in param_names if k[-1] != 'B']]
+    
+    # Define which model to use
     mdl_func_single = mdl.lya_speak_lin if baseline == 'lin' else \
                 mdl.lya_speak_damp if baseline == 'damp' else \
                 mdl.lya_speak
+    
     # Ensure initial guesses are within bounds
-    p0_single, bounds_single = check_inputs(p0_single, bounds_single)
+    p0_single, speak_bounds = check_inputs(p0_single, speak_bounds)
 
     for _ in range(3): # Try up to three times
         try:
             popt, pcov = curve_fit(mdl_func_single, wave[fitmask], spec[fitmask],
                                     p0=p0_single, sigma=spec_err[fitmask],
-                                    bounds=bounds_single, absolute_sigma=True,
+                                    bounds=speak_bounds, absolute_sigma=True,
                                     max_nfev = 100000, method = 'trf')
             popt_single  = popt
             perr_single = np.sqrt(np.diag(pcov))
@@ -443,7 +459,7 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
             best_pcov = pcov_double
             best_rchsq = rchsq_double
             best_param_names = param_names  # Use full parameter names
-            best_bounds = bounds
+            best_bounds = dpeak_bounds
             best_method = 'double-peaked'
         else:
             print(f"Single-peaked fit is better (reduced chi-squared = {rchsq_single:.2f}) than double-peaked fit ({rchsq_double:.2f}).")
@@ -453,7 +469,7 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
             best_rchsq = rchsq_single
             # Exclude blue peak parameters from the names
             best_param_names = [n for n in param_names if n[-1] != 'B']
-            best_bounds = bounds_single
+            best_bounds = speak_bounds
             best_method = 'single-peaked'
     elif popt_double is not None and perr_double is not None:
         best_popt = popt_double
@@ -461,7 +477,7 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
         best_pcov = pcov_double
         best_rchsq = rchsq_double
         best_param_names = param_names  # Use full parameter names
-        best_bounds = bounds
+        best_bounds = dpeak_bounds
         best_method = 'double-peaked'
     elif popt_single is not None and perr_single is not None:
         best_popt = popt_single
@@ -469,10 +485,10 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
         best_pcov = pcov_single
         best_rchsq = rchsq_single
         best_param_names = [n for n in param_names if n[-1] != 'B']
-        best_bounds = bounds_single
+        best_bounds = speak_bounds
         best_method = 'single-peaked'
     else:
-        print(f"Both single and double-peaked fits failed for {row['CLUSTER']} {row['iden']}.")
+        print(f"Both single and double-peaked fits failed for {cluster} {iden}.")
         return {}
     
     # If we got here, we have a best fit. Populate the parameter dictionary
@@ -486,23 +502,19 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
     final_params, final_errors, \
         final_function, final_reduced_chisq \
             = initial_profile.fit_to(wave, spec, spec_err, mask=fitmask,
-                                     bounds=best_bounds, use_bootstrap=True,
-                                     bootstrap_params={
-                                         'niter':           mc_niter,
-                                         'autocorrelation': False,
-                                         'max_nfev':        2000
-                                     })
+                                     bounds=best_bounds, use_bootstrap=use_bootstrap,
+                                     bootstrap_params=bootstrap_params)
     
     # Catch cases where the fit failed
     if final_params is None or final_errors is None:
         print(f"Final fitting with bootstrapping failed for {cluster} {iden}.")
         return {}
 
-    # Add dummy values for the blue peak parameters if needed
-    if 'AMPB' not in final_params.keys():
-        for pname in param_names[:4]:
-            final_params[pname] = np.nan
-            final_errors[pname] = np.nan
+    # # Add dummy values for the blue peak parameters if needed
+    # if 'AMPB' not in final_params.keys():
+    #     for pname in param_names[:4]:
+    #         final_params[pname] = np.nan
+    #         final_errors[pname] = np.nan
     
     # Build the fit_result dictionary to return
     fit_result = {
@@ -520,59 +532,10 @@ def fit_lya(wave, spec, spec_err, initial_guesses, iden, cluster,
         'method': best_method
     }
 
-    # Dictionary of full baseline names for plotting
-    basenames = {
-        'const': 'Constant',
-        'lin': 'Linear',
-        'damp': 'Absorption'
-    }
-
+    # Plot the fit result if requested
     if plot_result and final_function is not None:
-        # Plot the fit result, decomposed into lyman alpha and baseline components
-        # Make a fine wavelength grid for plotting the model
-        finegrid = np.linspace(wave[fitmask].min(), wave[fitmask].max(), 1000)
-        # Total model
-        final_model = final_function(finegrid, *best_popt)
-        # Emission model only (extract the emission parameters, then use either single or double peak function)
-        # Appending zero to the end for the continuum level
-        emission_popt = best_popt.copy()[:-len(cont_init)]
-        rpeak_popt = emission_popt[:4]
-        bpeak_model = 0
-        if len(emission_popt) == 8: # double peaked
-            rpeak_popt = emission_popt[4:8]
-            bpeak_popt = emission_popt[:4]
-            bpeak_model = mdl.lya_speak(finegrid, *bpeak_popt, 0.0) # Append zero for continuum
-        rpeak_model = mdl.lya_speak(finegrid, *rpeak_popt, 0.0) # Append zero for continuum
-        # Baseline only -- just subtract the emission model from the total
-        baseline_model = final_model - rpeak_model - bpeak_model
-
-        # Now plot
-        plt.figure(figsize=(6,3), facecolor='white')
-        # Data with error bars
-        plt.step(wave[fitmask], spec[fitmask], where='mid', color='black', alpha=0.75, label='Data')
-        plt.fill_between(wave[fitmask], spec[fitmask] - spec_err[fitmask], spec[fitmask] + spec_err[fitmask],
-                         color='gray', step='mid', alpha=0.3, label='Error')
-        # Model components
-        # Total model
-        plt.plot(finegrid, final_function(finegrid, *best_popt),
-                 color='fuchsia', label='Best Fit')
-        # Emission only
-        plt.plot(finegrid, rpeak_model,
-                 color='red', linestyle='--', label='Red Peak')
-        if len(emission_popt) == 8: # double peaked
-            plt.plot(finegrid, bpeak_model,
-                     color='royalblue', linestyle='--', label='Blue Peak')
-        # Baseline only
-        plt.plot(finegrid, baseline_model,
-                 color='tab:green', linestyle=':', label=f'{basenames[baseline]} Baseline')
-        plt.xlim(lya_peak - 50, lya_peak + 50)
-        plt.xlabel('Wavelength [\AA]')
-        plt.ylabel('Flux Density [$10^{-20}$\,erg\,s$^{-1}$\,cm$^{-2}$\,\AA$^{-1}$]')
-        plt.title(f"{row['CLUSTER']} {row['iden']} "+r"Lyman-$\alpha$ Fit")
-        plt.legend()
-        if save_plots:
-            plt.savefig(f"{plot_dir}/{row['CLUSTER']}_{row['iden']}_lya_fit.png", dpi=300)
-        plt.show()
+        plot.plot_lya_fit_result(fit_result, iden, cluster, save_plots=save_plots, 
+                           plot_dir=plot_dir, spec_type=spec_type)
 
     return fit_result
 

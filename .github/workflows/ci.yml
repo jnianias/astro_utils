@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, lya_fit_update ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, lya_fit_update ]
 
 jobs:
   build:
