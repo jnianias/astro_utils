@@ -46,9 +46,7 @@ pip install -e .
 
 By default, the package expects your MUSE catalogs and spectra to be organized under a single base data directory. You can specify this directory when using the package, or configure it in your scripts as needed.
 
-No environment variables are required. All configuration is handled via function arguments or configuration files.
-
-See [CONFIG.md](CONFIG.md) for detailed configuration documentation.
+A few environment variables are required for the package to know where to look for spectra and catalogues both locally and online; see [CONFIG.md](CONFIG.md) for detailed configuration documentation.
 
 ## Usage
 
@@ -176,11 +174,7 @@ The package expects the following directory structure (see CONFIG.md for details
 
 ## Examples
 
-See the `notebooks/` directory for Jupyter notebook examples demonstrating:
-- Spectral line fitting workflows
-- Lyman-alpha profile analysis
-- Catalog operations
-- Custom plotting
+See the `notebooks/` directory for Jupyter notebook examples [to be added]
 
 ## Contributing
 
@@ -194,7 +188,6 @@ Contributions are welcome! Please:
 
 If you use this package in your research, please cite:
 - Richard et al. (2021) for the MUSE catalogs
-- Your publication using this software
 
 ## Contact
 
